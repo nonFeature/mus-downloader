@@ -54,7 +54,9 @@ def download_deezer_track(track_id: str, dest_dir: Path, target_quality: str = "
     target_quality: 'FLAC', 'MP3_320' или 'MP3_128'.
     Возвращает путь к скачанному файлу или None.
     """
-    if target_quality not in QUALITIES:
+    if target_quality == "MP3":
+        target_quality = "MP3_320"
+    elif target_quality not in QUALITIES:
         target_quality = "FLAC"
         
     quality_info = QUALITIES[target_quality]

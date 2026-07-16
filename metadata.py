@@ -31,6 +31,7 @@ def resolve_song_link(url: str) -> Optional[dict]:
             "album_art": first_entity.get("thumbnailUrl", ""),
             "deezer_id": None,
             "yandex_id": None,
+            "tidal_id": None,
             "youtube_music_url": None,
             "soundcloud_url": None,
             "spotify_url": None,
@@ -48,6 +49,8 @@ def resolve_song_link(url: str) -> Optional[dict]:
                 result["deezer_id"] = entity.get("id")
             elif provider == "yandex":
                 result["yandex_id"] = entity.get("id")
+            elif provider == "tidal":
+                result["tidal_id"] = entity.get("id")
                 
         # Извлекаем ссылки по платформам
         links = data.get("linksByPlatform", {})
@@ -58,6 +61,13 @@ def resolve_song_link(url: str) -> Optional[dict]:
                 match = re.search(r"track/(\d+)", dz_url)
                 if match:
                     result["deezer_id"] = match.group(1)
+                    
+        if "tidal" in links:
+            td_url = links["tidal"].get("url", "")
+            if td_url and not result["tidal_id"]:
+                match = re.search(r"track/(\d+)", td_url)
+                if match:
+                    result["tidal_id"] = match.group(1)
                     
         if "yandex" in links:
             ya_url = links["yandex"].get("url", "")

@@ -14,6 +14,12 @@ import sys
 from core import download_track_by_link
 
 def main():
+    # Настройка UTF-8 для вывода в консоль на Windows
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Multi-source FLAC/MP3 Music Downloader")
     parser.add_argument("url", nargs="?", help="URL of the track to download (Spotify, Apple Music, Deezer, etc.)")
     parser.add_argument("-q", "--quality", choices=["FLAC", "MP3"], default="FLAC", help="Preferred download quality (default: FLAC)")
