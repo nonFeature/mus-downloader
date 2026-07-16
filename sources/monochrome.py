@@ -2,6 +2,7 @@ import httpx
 import re
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import MONOCHROME_QOBUZ_PROXY_URL, MONOCHROME_HIFI_URL
 
 # Список публичных прокси Qobuz для отказоустойчивости
@@ -18,17 +19,13 @@ HEADERS = {
 
 def resolve_qobuz_track(isrc: str, query: str = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Ищет трек по ISRC или по текстовому запросу на прокси-серверах Qobuz.
-    Возвращает (track_id, title, performer) или (None, None, None).
+    Ищет трек по ISRC или по текстовому запросу на прокси-серверах Qobuz в мультипотоке.
     """
     # 1. Попытка поиска по ISRC
     if isrc:
-        for base_url in QOBUZ_PROXIES:
-            if not base_url:
-                continue
+        def check_isrc(base_url):
             try:
                 url = f"{base_url.rstrip('/')}/api/get-music"
-                print(f"[*] Monochrome: Запрос ISRC {isrc} на {base_url}")
                 resp = httpx.get(url, params={"q": isrc, "offset": 0}, headers=HEADERS, timeout=12)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -41,16 +38,22 @@ def resolve_qobuz_track(isrc: str, query: str = None) -> tuple[Optional[str], Op
                             track = hires_matches[0]
                         return str(track.get("id")), track.get("title"), track.get("performer", {}).get("name")
             except Exception:
-                continue
+                pass
+            return None
+
+        print(f"[*] Monochrome: Параллельный запрос ISRC {isrc} на {len(QOBUZ_PROXIES)} прокси Qobuz...")
+        with ThreadPoolExecutor(max_workers=len(QOBUZ_PROXIES)) as executor:
+            futures = [executor.submit(check_isrc, p) for p in QOBUZ_PROXIES if p]
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    return res
 
     # 2. Попытка поиска по тексту (если по ISRC не нашли или его нет)
     if query:
-        for base_url in QOBUZ_PROXIES:
-            if not base_url:
-                continue
+        def check_query(base_url):
             try:
                 url = f"{base_url.rstrip('/')}/api/get-music"
-                print(f"[*] Monochrome: Поиск по тексту '{query}' на {base_url}")
                 resp = httpx.get(url, params={"q": query, "offset": 0}, headers=HEADERS, timeout=12)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -62,18 +65,24 @@ def resolve_qobuz_track(isrc: str, query: str = None) -> tuple[Optional[str], Op
                             track = hires_items[0]
                         return str(track.get("id")), track.get("title"), track.get("performer", {}).get("name")
             except Exception:
-                continue
+                pass
+            return None
+
+        print(f"[*] Monochrome: Параллельный поиск по тексту '{query}' на Qobuz...")
+        with ThreadPoolExecutor(max_workers=len(QOBUZ_PROXIES)) as executor:
+            futures = [executor.submit(check_query, p) for p in QOBUZ_PROXIES if p]
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    return res
                 
     return None, None, None
 
 def get_qobuz_download_url(track_id: str, quality_fmt: int) -> Optional[str]:
     """
-    Получает прямую CDN ссылку для скачивания трека с Qobuz.
-    quality_fmt: 27 (24-bit FLAC), 7 (16-bit FLAC), 6 (320kbps MP3/AAC)
+    Получает прямую CDN ссылку для скачивания трека с Qobuz в мультипотоке.
     """
-    for base_url in QOBUZ_PROXIES:
-        if not base_url:
-            continue
+    def check_download(base_url):
         try:
             url = f"{base_url.rstrip('/')}/api/download-music"
             resp = httpx.get(
@@ -89,12 +98,20 @@ def get_qobuz_download_url(track_id: str, quality_fmt: int) -> Optional[str]:
                     if stream_url:
                         return stream_url
         except Exception:
-            continue
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=len(QOBUZ_PROXIES)) as executor:
+        futures = [executor.submit(check_download, p) for p in QOBUZ_PROXIES if p]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                return res
     return None
 
 def _tidal_stream_url(tidal_id: str, quality: str) -> Optional[str]:
     """
-    Получает прямой поток Tidal из Monochrome HiFi API.
+    Получает прямой поток Tidal из Monochrome HiFi API в мультипотоке.
     """
     hifi_api_endpoints = [
         MONOCHROME_HIFI_URL,
@@ -106,12 +123,9 @@ def _tidal_stream_url(tidal_id: str, quality: str) -> Optional[str]:
     
     q_val = "LOSSLESS" if quality == "FLAC" else "HIGH"
     
-    for base in hifi_api_endpoints:
-        if not base:
-            continue
+    def check_tidal(base):
         try:
             url = f"{base.rstrip('/')}/track/"
-            print(f"[*] Monochrome: Запрос потока Tidal {tidal_id} ({q_val}) на {base}")
             resp = httpx.get(url, params={"id": int(tidal_id), "quality": q_val}, headers=HEADERS, timeout=12)
             if resp.status_code == 200:
                 body = resp.json()
@@ -125,7 +139,16 @@ def _tidal_stream_url(tidal_id: str, quality: str) -> Optional[str]:
                     if urls and isinstance(urls, list) and urls[0].startswith("http"):
                         return urls[0]
         except Exception:
-            continue
+            pass
+        return None
+
+    print(f"[*] Monochrome: Параллельный запрос потока Tidal {tidal_id} ({q_val}) на {len(hifi_api_endpoints)} инстансах...")
+    with ThreadPoolExecutor(max_workers=len(hifi_api_endpoints)) as executor:
+        futures = [executor.submit(check_tidal, b) for b in hifi_api_endpoints if b]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                return res
     return None
 
 def download_monochrome_track(isrc: str, artist_hint: str, title_hint: str, dest_dir: Path, target_quality: str = "FLAC", tidal_id: str = None) -> Optional[Path]:
