@@ -47,8 +47,15 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
     
     # 2. Пытаемся скачать из различных источников по цепочке
     
-    # --- Источник 1: Monochrome (Qobuz / Tidal / Amazon) ---
-    if isrc or meta.get("tidal_id"):
+    # --- Источник 1: Deezer ---
+    if meta.get("deezer_id"):
+        print("\n[*] Попытка скачивания через Deezer (Echo Proxy)...")
+        file_path = download_deezer_track(meta["deezer_id"], config.DOWNLOAD_DIR, target_quality)
+        if file_path:
+            source_used = "Deezer"
+            
+    # --- Источник 2: Monochrome (Qobuz / Tidal / Amazon) ---
+    if not file_path and (isrc or meta.get("tidal_id")):
         print("\n[*] Попытка скачивания через Monochrome...")
         file_path = download_monochrome_track(
             isrc=isrc,
@@ -60,13 +67,6 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
         )
         if file_path:
             source_used = "Monochrome"
-            
-    # --- Источник 2: Deezer ---
-    if not file_path and meta.get("deezer_id"):
-        print("\n[*] Попытка скачивания через Deezer (Echo Proxy)...")
-        file_path = download_deezer_track(meta["deezer_id"], config.DOWNLOAD_DIR, target_quality)
-        if file_path:
-            source_used = "Deezer"
             
     # --- Источник 3: Сбер Звук ---
     if not file_path and config.ZVUK_TOKEN:
