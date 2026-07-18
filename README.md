@@ -51,13 +51,38 @@ Available variables:
 - `DOWNLOAD_DIR`: Path to save downloaded tracks (default: `downloads`).
 
 ### Soulseek (slskd) Docker Setup
-For headless remote servers, you can run `slskd` using the provided `docker-compose.yml`:
-1. Open `docker-compose.yml` and enter your Soulseek credentials in `SLSKD_SLSK_USERNAME` and `SLSKD_SLSK_PASSWORD`.
+For headless remote servers, you can run `slskd` using Docker with `docker-compose.yml`:
+1. Create a `docker-compose.yml` file:
+   ```yml
+   services:
+     slskd:
+       image: ghcr.io/slskd/slskd:latest
+       container_name: slskd
+       restart: unless-stopped
+       ports:
+         - "127.0.0.1:5030:5030"
+       environment:
+         # Your Soulseek credentials
+         - SLSKD_SLSK_USERNAME=your_username
+         - SLSKD_SLSK_PASSWORD=your_password
+         
+         # Allow remote configuration via web UI
+         - SLSKD_REMOTE_CONFIGURATION=true
+         
+         # Credentials for slskd web panel (to be used in downloader's .env)
+         - SLSKD_USERNAME=admin
+         - SLSKD_PASSWORD=admin_password
+       volumes:
+         # Path to store database and configurations
+         - ./slskd/appdata:/app/appdata
+         # Path to store downloaded files (script retrieves files from here)
+         - ./slskd/downloads:/app/downloads
+   ```
 2. Start the container:
    ```bash
    docker compose up -d
    ```
-3. Update `.env` to point to `http://localhost:5030` and set `SLSKD_DOWNLOADS_PATH=./slskd/downloads`.
+3. Configure `.env`, setting `SLSKD_URL=http://localhost:5030` and `SLSKD_DOWNLOADS_PATH=./slskd/downloads`.
 
 ---
 
@@ -136,7 +161,32 @@ cp .env.example .env
 
 ### Настройка Soulseek (slskd) через Docker Compose
 Для работы на удаленных серверах удобнее всего запустить `slskd` через Docker с помощью файла `docker-compose.yml`:
-1. Откройте `docker-compose.yml` и пропишите ваши логин и пароль от сети Soulseek в переменные `SLSKD_SLSK_USERNAME` и `SLSKD_SLSK_PASSWORD`.
+1. Создайте файл:
+   ```yml
+   services:
+      slskd:
+         image: ghcr.io/slskd/slskd:latest
+         container_name: slskd
+         restart: unless-stopped
+         ports:
+            - "127.0.0.1:5030:5030"
+         environment:
+            # Ваши учетные данные для входа в сеть Soulseek
+            - SLSKD_SLSK_USERNAME=
+            - SLSKD_SLSK_PASSWORD=ваш_пароль_в_soulseek
+            
+            # Разрешить удаленную настройку через веб-интерфейс
+            - SLSKD_REMOTE_CONFIGURATION=true
+            
+            # Логин и пароль для веб-панели управления slskd (будут использоваться в .env скачивателя)
+            - SLSKD_USERNAME=admin
+            - SLSKD_PASSWORD=admin_password
+         volumes:
+            # Папка для базы данных и конфигурации slskd
+            - ./slskd/appdata:/app/appdata
+            # Папка для скачанных файлов (скрипт будет забирать файлы отсюда)
+            - ./slskd/downloads:/app/downloads
+   ```
 2. Запустите контейнер:
    ```bash
    docker compose up -d
