@@ -124,6 +124,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
                 "track_number": data.get("track_position"),
                 "album_artist": artist_info.get("name"),
                 "album_art": album_info.get("cover_xl") or album_info.get("cover_big") or album_info.get("cover_medium"),
+                "duration": data.get("duration"),
             }
     except Exception as e:
         print(f"[!] Ошибка запроса метаданных из Deezer: {e}")
@@ -233,6 +234,7 @@ def parse_mb_recording(recording: dict, expected_artist: str = "") -> dict:
         "track_number": None,
         "track_total": None,
         "album_artist": None,
+        "duration": (recording.get("length") / 1000.0) if recording.get("length") else None,
         "_score": -999,
     }
     

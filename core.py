@@ -55,7 +55,7 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
             source_used = "Deezer"
             
     # --- Источник 2: Monochrome (Qobuz / Tidal / Amazon) ---
-    if not file_path and (isrc or meta.get("tidal_id")):
+    if not file_path and (isrc or meta.get("tidal_id") or (artist and title)):
         print("\n[*] Попытка скачивания через Monochrome...")
         file_path = download_monochrome_track(
             isrc=isrc,
@@ -63,7 +63,9 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
             title_hint=title,
             dest_dir=config.DOWNLOAD_DIR,
             target_quality=target_quality,
-            tidal_id=meta.get("tidal_id")
+            tidal_id=meta.get("tidal_id"),
+            album_hint=meta.get("album"),
+            duration=meta.get("duration")
         )
         if file_path:
             source_used = "Monochrome"

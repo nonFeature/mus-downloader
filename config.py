@@ -27,6 +27,9 @@ ZVUK_TOKEN = os.getenv("ZVUK_TOKEN", "")
 # Конфигурация Monochrome
 MONOCHROME_HIFI_URL = os.getenv("MONOCHROME_HIFI_URL", "https://api.monochrome.tf").rstrip("/")
 MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qobuz.kennyy.com.br").rstrip("/")
+MONOCHROME_AMAZON_API_URL = os.getenv("MONOCHROME_AMAZON_API_URL", "https://amz.geeked.wtf").rstrip("/")
+MONOCHROME_AMAZON_JWT = os.getenv("MONOCHROME_AMAZON_JWT", "")
+MONOCHROME_AMAZON_BYPASS_TOKEN = os.getenv("MONOCHROME_AMAZON_BYPASS_TOKEN", "")
 
 # Путь для сохранения скачанных треков
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./downloads"))

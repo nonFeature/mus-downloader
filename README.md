@@ -42,11 +42,22 @@ cp .env.example .env
 ```
 
 Available variables:
-- `SOULSEEK_API_URL` / `SOULSEEK_USERNAME` / `SOULSEEK_PASSWORD`: Connection parameters for your `slskd` instance (Soulseek daemon).
+- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Connection and download parameters for your `slskd` instance (Soulseek daemon).
 - `YANDEX_TOKEN`: Access token for Yandex Music API.
 - `ZVUK_TOKEN`: Authentication token for Zvuk API.
-- `MONOCHROME_HIFI_URL`: Custom Monochrome HiFi API instance URL (default: `https://api.monochrome.tf`).
+- `MONOCHROME_AMAZON_API_URL`: Custom Amazon Music proxy API URL (default: `https://amz.geeked.wtf`).
+- `MONOCHROME_AMAZON_JWT`: Cloudflare Turnstile JWT for Amazon Music authentication (valid for 1 hour).
+- `MONOCHROME_AMAZON_BYPASS_TOKEN`: Optional bypass token for Amazon Music.
 - `DOWNLOAD_DIR`: Path to save downloaded tracks (default: `downloads`).
+
+### Soulseek (slskd) Docker Setup
+For headless remote servers, you can run `slskd` using the provided `docker-compose.yml`:
+1. Open `docker-compose.yml` and enter your Soulseek credentials in `SLSKD_SLSK_USERNAME` and `SLSKD_SLSK_PASSWORD`.
+2. Start the container:
+   ```bash
+   docker compose up -d
+   ```
+3. Update `.env` to point to `http://localhost:5030` and set `SLSKD_DOWNLOADS_PATH=./slskd/downloads`.
 
 ---
 
@@ -115,11 +126,22 @@ cp .env.example .env
 ```
 
 Основные переменные:
-- `SOULSEEK_API_URL` / `SOULSEEK_USERNAME` / `SOULSEEK_PASSWORD`: Настройки подключения к вашему инстансу `slskd` (Soulseek).
+- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Параметры подключения и папка загрузок вашего инстанса `slskd` (демона Soulseek).
 - `YANDEX_TOKEN`: Токен доступа Яндекс Музыки.
 - `ZVUK_TOKEN`: Авторизационный токен Сбер Звука.
-- `MONOCHROME_HIFI_URL`: URL инстанса Monochrome (по умолчанию: `https://api.monochrome.tf`).
+- `MONOCHROME_AMAZON_API_URL`: URL прокси-сервера Amazon Music (по умолчанию: `https://amz.geeked.wtf`).
+- `MONOCHROME_AMAZON_JWT`: Временный JWT-токен Cloudflare Turnstile для Amazon Music (действует 1 час).
+- `MONOCHROME_AMAZON_BYPASS_TOKEN`: Опциональный токен обхода капчи для Amazon Music.
 - `DOWNLOAD_DIR`: Директория для сохранения скачанной музыки (по умолчанию: `downloads`).
+
+### Настройка Soulseek (slskd) через Docker Compose
+Для работы на удаленных серверах удобнее всего запустить `slskd` через Docker с помощью файла `docker-compose.yml`:
+1. Откройте `docker-compose.yml` и пропишите ваши логин и пароль от сети Soulseek в переменные `SLSKD_SLSK_USERNAME` и `SLSKD_SLSK_PASSWORD`.
+2. Запустите контейнер:
+   ```bash
+   docker compose up -d
+   ```
+3. Настройте `.env`, указав `SLSKD_URL=http://localhost:5030` и путь к загрузкам `SLSKD_DOWNLOADS_PATH=./slskd/downloads`.
 
 ---
 

@@ -1,0 +1,23 @@
+services:
+  slskd:
+    image: ghcr.io/slskd/slskd:latest
+    container_name: slskd
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5030:5030"
+    environment:
+      # Ваши учетные данные для входа в сеть Soulseek
+      - SLSKD_SLSK_USERNAME=ваш_логин_в_soulseek
+      - SLSKD_SLSK_PASSWORD=ваш_пароль_в_soulseek
+      
+      # Разрешить удаленную настройку через веб-интерфейс
+      - SLSKD_REMOTE_CONFIGURATION=true
+      
+      # Логин и пароль для веб-панели управления slskd (будут использоваться в .env скачивателя)
+      - SLSKD_USERNAME=admin
+      - SLSKD_PASSWORD=admin_password
+    volumes:
+      # Папка для базы данных и конфигурации slskd
+      - ./slskd/appdata:/app/appdata
+      # Папка для скачанных файлов (скрипт будет забирать файлы отсюда)
+      - ./slskd/downloads:/app/downloads
