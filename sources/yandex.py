@@ -78,7 +78,7 @@ def download_yandex_track(track_id: str, dest_dir: Path, target_quality: str = "
         
         print(f"[*] Yandex: Скачивание трека в {output_path}...")
         
-        with httpx.stream("GET", direct_link, timeout=30) as r:
+        with httpx.stream("GET", direct_link, follow_redirects=True, timeout=30) as r:
             r.raise_for_status()
             with open(output_path, "wb") as f:
                 for chunk in r.iter_bytes(chunk_size=65536):

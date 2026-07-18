@@ -255,17 +255,54 @@ def get_qobuz_download_url(track_id: str, quality_fmt: int) -> Optional[str]:
                 return res
     return None
 
+def fetch_monochrome_instances() -> list[str]:
+    """
+    Автоматически собирает список активных инстанций Monochrome.
+    Сначала пытается загрузить актуальный список с uptime API,
+    при неудаче откатывается на встроенный список из 11 дефолтных инстанций.
+    """
+    instances = []
+    
+    # 1. Попытка запросить uptime API
+    try:
+        r = httpx.get("https://tidal-uptime.geeked.wtf", timeout=6)
+        if r.status_code == 200:
+            data = r.json()
+            api_list = data.get("api", [])
+            for item in api_list:
+                url = item.get("url")
+                if url:
+                    instances.append(url.rstrip("/"))
+    except Exception:
+        pass
+        
+    # 2. Если не удалось получить список, берем дефолтные инстанции
+    if not instances:
+        instances = [
+            "https://eu-central.monochrome.tf",
+            "https://us-west.monochrome.tf",
+            "https://api.monochrome.tf",
+            "https://monochrome-api.samidy.com",
+            "https://maus.qqdl.site",
+            "https://vogel.qqdl.site",
+            "https://katze.qqdl.site",
+            "https://hund.qqdl.site",
+            "https://wolf.qqdl.site",
+            "https://hifi.geeked.wtf",
+            "https://tidal.kinoplus.online"
+        ]
+        
+    # Добавляем пользовательскую инстанцию из конфига в начало, если она задана
+    if MONOCHROME_HIFI_URL and MONOCHROME_HIFI_URL not in instances:
+        instances.insert(0, MONOCHROME_HIFI_URL)
+        
+    return [url for url in instances if url]
+
 def _tidal_stream_url(tidal_id: str, quality: str) -> Optional[str]:
     """
     Получает прямой поток Tidal из Monochrome HiFi API в мультипотоке.
     """
-    hifi_api_endpoints = [
-        MONOCHROME_HIFI_URL,
-        "https://monochrome-api.samidy.com",
-        "https://api.monochrome.tf",
-        "https://us-west.monochrome.tf",
-        "https://eu-central.monochrome.tf"
-    ]
+    hifi_api_endpoints = fetch_monochrome_instances()
     
     q_val = "LOSSLESS" if quality == "FLAC" else "HIGH"
     

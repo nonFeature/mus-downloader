@@ -87,6 +87,8 @@ def download_zvuk_track(track_id: str, dest_dir: Path, target_quality: str = "FL
             stream_url = client.get_stream_url(track.id, quality=Quality.MID)
             ext = "mp3"
 
+
+
         clean_name = re.sub(r'[\\/*?:"<>|]', "_", f"{artist_name} - {track_title}")
         output_path = dest_dir / f"{clean_name}.{ext}"
         
@@ -94,14 +96,27 @@ def download_zvuk_track(track_id: str, dest_dir: Path, target_quality: str = "FL
         
         # Скачиваем поток
         headers = {"User-Agent": "Mozilla/5.0"}
-        with httpx.stream("GET", stream_url, headers=headers, timeout=30) as r:
-            r.raise_for_status()
-            with open(output_path, "wb") as f:
-                for chunk in r.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
+        try:
+            with httpx.stream("GET", stream_url, headers=headers, follow_redirects=True, timeout=30) as r:
+                r.raise_for_status()
+                
+                # Проверяем, не перенаправило ли нас на HLS плейлист (m3u8)
+                final_url = str(r.url).lower()
+                content_type = r.headers.get("content-type", "").lower()
+                
+                if "m3u8" in final_url or "mpegurl" in content_type or "streamhls" in final_url:
+                    print("[!] Zvuk: Получен плейлист HLS / DRM-поток вместо аудиофайла. Пропускаем.")
+                    return None
                     
-        print(f"[+] Zvuk: Скачивание завершено: {output_path}")
-        return output_path
+                with open(output_path, "wb") as f:
+                    for chunk in r.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            print(f"[+] Zvuk: Скачивание завершено: {output_path}")
+            return output_path
+        except Exception as e:
+            if output_path.exists():
+                output_path.unlink()
+            raise e
         
     except Exception as e:
         print(f"[!] Zvuk: Ошибка при скачивании трека {track_id}: {e}")

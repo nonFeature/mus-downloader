@@ -32,6 +32,7 @@ def apply_metadata(
     source: str | None = None,
     source_quality: str | None = None,
     compilation: bool = False,
+    genre: str | None = None,
 ):
     """
     Записывает метаданные в аудиофайл (FLAC, MP3 или M4A).
@@ -68,6 +69,8 @@ def apply_metadata(
                 audio["SOURCE"] = source
             if source_quality:
                 audio["SOURCE_QUALITY"] = source_quality
+            if genre:
+                audio["GENRE"] = genre
             if has_art:
                 pic = Picture()
                 pic.type = 3  # Front cover
@@ -105,6 +108,8 @@ def apply_metadata(
             if track_number:
                 tn = f"{track_number}/{track_total}" if track_total else str(track_number)
                 audio["tracknumber"] = [tn]
+            if genre:
+                audio["genre"] = genre
             
             # Регистрируем кастомные TXXX фреймы для источника и качества
             try:
@@ -153,6 +158,8 @@ def apply_metadata(
                 audio["----:com.musicgrabber:SOURCE"] = [source.encode("utf-8")]
             if source_quality:
                 audio["----:com.musicgrabber:SOURCE_QUALITY"] = [source_quality.encode("utf-8")]
+            if genre:
+                audio["\xa9gen"] = [genre]
             
             if has_art:
                 cover_format = MP4Cover.FORMAT_PNG if "png" in art_mime else MP4Cover.FORMAT_JPEG

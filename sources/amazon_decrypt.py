@@ -123,7 +123,7 @@ class Mp4CencDecryptor:
                 self.dfla_metadata = bytes(payload[dfla_idx+8 : dfla_idx-4+size])
 
     def _handle_tfhd(self, payload: bytearray):
-        flags = int.from_bytes(payload[0:3], 'big')
+        flags = int.from_bytes(payload[1:4], 'big')
         offset = 8  # Skip version/flags (4 bytes) + track_ID (4 bytes)
         if flags & 0x000001: offset += 8  # base_data_offset
         if flags & 0x000002: offset += 4  # sample_description_index
@@ -132,7 +132,7 @@ class Mp4CencDecryptor:
             self.default_sample_size = int.from_bytes(payload[offset:offset+4], 'big')
 
     def _handle_trun(self, payload: bytearray):
-        flags = int.from_bytes(payload[0:3], 'big')
+        flags = int.from_bytes(payload[1:4], 'big')
         sample_count = int.from_bytes(payload[4:8], 'big')
         
         data_offset_present = bool(flags & 0x000001)
@@ -160,7 +160,7 @@ class Mp4CencDecryptor:
         if self.target_codec != 'flac':
             data[offset+4:offset+8] = b'free'
             
-        flags = int.from_bytes(payload[0:3], 'big')
+        flags = int.from_bytes(payload[1:4], 'big')
         sample_count = int.from_bytes(payload[4:8], 'big')
         iv_size = 8  # Amazon Music uses 8-byte IVs
         

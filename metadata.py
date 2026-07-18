@@ -2,6 +2,7 @@ import httpx
 import re
 import urllib.parse
 from typing import Optional
+import config
 
 USER_AGENT = "MusicDownloader/1.0 (akate@gmail.com)"
 
@@ -332,12 +333,143 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         print(f"[!] Ошибка текстового поиска в MusicBrainz: {e}")
     return None
 
+def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> Optional[dict]:
+    """
+    Получает метаданные трека из iTunes Search/Lookup API.
+    """
+    params = {}
+    if isrc:
+        url = "https://itunes.apple.com/lookup"
+        params = {"isrc": isrc}
+    else:
+        url = "https://itunes.apple.com/search"
+        params = {
+            "term": f"{artist} {title}",
+            "media": "music",
+            "entity": "musicTrack",
+            "limit": 1
+        }
+    try:
+        r = httpx.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results:
+                track = results[0]
+                art_url = track.get("artworkUrl100", "")
+                if art_url:
+                    # Извлекаем картинку в высоком разрешении
+                    art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                
+                release_date = track.get("releaseDate", "")
+                year = release_date[:4] if release_date else None
+                
+                return {
+                    "title": track.get("trackName"),
+                    "artist": track.get("artistName"),
+                    "album": track.get("collectionName"),
+                    "year": year,
+                    "track_number": track.get("trackNumber"),
+                    "track_total": track.get("trackCount"),
+                    "album_artist": track.get("artistName"),
+                    "album_art": art_url,
+                }
+    except Exception as e:
+        print(f"[!] iTunes: Ошибка получения метаданных: {e}")
+    return None
+
+def fetch_discogs_metadata(artist: str, title: str) -> Optional[dict]:
+    """
+    Получает метаданные трека из Discogs API.
+    """
+    if not config.DISCOGS_TOKEN:
+        return None
+    url = "https://api.discogs.com/database/search"
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Authorization": f"Discogs token={config.DISCOGS_TOKEN}"
+    }
+    params = {
+        "q": f"{artist} - {title}",
+        "type": "release",
+        "limit": 1
+    }
+    try:
+        r = httpx.get(url, params=params, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results:
+                release = results[0]
+                year = release.get("year")
+                if not year and "year" in release:
+                    year = str(release["year"])
+                
+                genres = release.get("genre", [])
+                styles = release.get("style", [])
+                all_tags = genres + styles
+                genre_str = ", ".join(all_tags[:3]) if all_tags else None
+                
+                return {
+                    "album": release.get("title"),
+                    "year": year,
+                    "genre": genre_str,
+                    "album_art": release.get("cover_image")
+                }
+    except Exception as e:
+        print(f"[!] Discogs: Ошибка получения метаданных: {e}")
+    return None
+
+def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
+    """
+    Получает теги (жанры) трека или исполнителя из Last.fm API.
+    """
+    if not config.LASTFM_API_KEY:
+        return None
+    url = "https://ws.audioscrobbler.com/2.0/"
+    params = {
+        "method": "track.gettoptags",
+        "artist": artist,
+        "track": title,
+        "api_key": config.LASTFM_API_KEY,
+        "format": "json"
+    }
+    try:
+        r = httpx.get(url, params=params, timeout=10)
+        tags = []
+        if r.status_code == 200:
+            data = r.json()
+            tags_list = data.get("toptags", {}).get("tag", [])
+            if isinstance(tags_list, list):
+                tags = [t.get("name") for t in tags_list if t.get("name")]
+                
+        # Если для трека тегов нет, пробуем теги исполнителя
+        if not tags:
+            params["method"] = "artist.gettoptags"
+            params.pop("track", None)
+            r = httpx.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                tags_list = data.get("toptags", {}).get("tag", [])
+                if isinstance(tags_list, list):
+                    tags = [t.get("name") for t in tags_list if t.get("name")]
+                    
+        # Фильтруем общие не-жанровые теги
+        excluded = {"seen live", "favorites", "awesome", "cool", "beautiful", "love", "favorite", "favourite"}
+        genres = [t.title() for t in tags if t.lower() not in excluded]
+        if genres:
+            return ", ".join(genres[:3])
+    except Exception:
+        pass
+    return None
+
 def get_track_metadata(url: str) -> dict:
     """
     Полный цикл извлечения метаданных:
     1. Запрос в song.link.
-    2. Запрос в API Deezer (для моментального получения альбома и ISRC).
-    3. При необходимости (если это сборник) - поиск студийного альбома через MusicBrainz.
+    2. Запрос в API Deezer и iTunes.
+    3. При необходимости - поиск оригинального альбома через MusicBrainz.
+    4. Получение жанров из Last.fm.
     """
     print(f"[*] Разрешение метаданных для: {url}")
     info = resolve_song_link(url)
@@ -349,54 +481,117 @@ def get_track_metadata(url: str) -> dict:
         print("[*] Получение метаданных напрямую из Deezer API...")
         dz_meta = fetch_deezer_metadata(info["deezer_id"])
         
-    isrc = None
+    artist_query = info.get("artist") or ""
+    title_query = info.get("title") or ""
+    isrc_query = info.get("isrc") or (dz_meta.get("isrc") if dz_meta else None)
+    
+    print("[*] Получение метаданных из iTunes API...")
+    itunes_meta = fetch_itunes_metadata(artist=artist_query, title=title_query, isrc=isrc_query)
+    
+    discogs_meta = None
+    if config.DISCOGS_TOKEN and artist_query and title_query:
+        print("[*] Получение метаданных из Discogs API...")
+        discogs_meta = fetch_discogs_metadata(artist_query, title_query)
+
+    # Объединяем информацию
     if dz_meta:
-        isrc = dz_meta.get("isrc")
-        info["isrc"] = isrc
-        
-        # Проверяем, не сборник ли это
-        album = dz_meta.get("album")
-        album_artist = dz_meta.get("album_artist") or ""
-        
-        is_compilation = False
-        if album_artist.lower() in ("various artists", "various"):
-            is_compilation = True
-        else:
-            _bad_words = ["various", "now that's what", "hits ", "greatest hits", "best of", "collection", "the very best", "compilation"]
-            if album and any(w in album.lower() for w in _bad_words):
-                is_compilation = True
+        for k, v in dz_meta.items():
+            if v and not info.get(k):
+                info[k] = v
                 
-        if not is_compilation:
-            # Напрямую используем чистые метаданные из Deezer (это очень быстро!)
-            print(f"[+] Найден оригинальный альбом в Deezer: '{album}'")
-            for key, val in dz_meta.items():
-                if val:
-                    info[key] = val
-            return info
-        else:
-            print(f"[*] Deezer вернул сборник '{album}'. Попробуем найти оригинальный альбом в MusicBrainz...")
+    if itunes_meta:
+        for k, v in itunes_meta.items():
+            if v and not info.get(k):
+                info[k] = v
+
+    if discogs_meta:
+        for k, v in discogs_meta.items():
+            if v and not info.get(k):
+                info[k] = v
+                
+    isrc = info.get("isrc")
+    album = info.get("album")
+    album_artist = info.get("album_artist") or ""
+    
+    # Проверяем, не сборник ли это
+    is_compilation = False
+    if album_artist.lower() in ("various artists", "various"):
+        is_compilation = True
+    else:
+        _bad_words = ["various", "now that's what", "hits ", "greatest hits", "best of", "collection", "the very best", "compilation"]
+        if album and any(w in album.lower() for w in _bad_words):
+            is_compilation = True
             
-    # Если это сборник или Deezer не дал метаданных, ищем через MusicBrainz
+    # Если это сборник или отсутствуют метаданные, ищем в MusicBrainz
     mb_data = None
-    if isrc:
-        print(f"[*] Ищем оригинальный альбом по ISRC: {isrc}")
-        mb_data = fetch_musicbrainz_by_isrc(isrc, info.get("artist", ""))
-        
-    if not mb_data and info.get("artist") and info.get("title"):
-        print(f"[*] Ищем оригинальный альбом по тексту: {info['artist']} - {info['title']}")
-        mb_data = search_musicbrainz_by_text(info["artist"], info["title"])
-        
+    if is_compilation or not album:
+        if isrc:
+            print(f"[*] Ищем оригинальный альбом в MusicBrainz по ISRC: {isrc}")
+            mb_data = fetch_musicbrainz_by_isrc(isrc, info.get("artist", ""))
+        if not mb_data and info.get("artist") and info.get("title"):
+            print(f"[*] Ищем оригинальный альбом в MusicBrainz по тексту: {info['artist']} - {info['title']}")
+            mb_data = search_musicbrainz_by_text(info["artist"], info["title"])
+            
     if mb_data:
-        # Применяем найденные MusicBrainz метаданные поверх
         for key, val in mb_data.items():
             if val:
                 info[key] = val
         info.pop("_score", None)
-    elif dz_meta:
-        # Если MusicBrainz ничего не нашел/был заблокирован, откатываемся на исходные метаданные Deezer
-        print("[*] Студийный альбом не найден в MusicBrainz, оставляем исходные данные из Deezer.")
-        for key, val in dz_meta.items():
-            if val:
-                info[key] = val
-                
+        
+    # Получаем жанры из Last.fm
+    if info.get("artist") and info.get("title"):
+        print("[*] Получение жанров из Last.fm...")
+        genres = fetch_lastfm_genres(info["artist"], info["title"])
+        if genres:
+            info["genre"] = genres
+            print(f"[+] Получены жанры: {genres}")
+            
     return info
+
+def resolve_query_metadata(query: str) -> Optional[dict]:
+    """
+    Разрешает поисковый запрос (например, 'Artist - Title') в структурированные метаданные через iTunes API.
+    """
+    print(f"[*] Поиск трека в каталоге iTunes: '{query}'")
+    params = {
+        "term": query,
+        "media": "music",
+        "entity": "musicTrack",
+        "limit": 1
+    }
+    try:
+        r = httpx.get("https://itunes.apple.com/search", params=params, timeout=10)
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            if results:
+                track = results[0]
+                art_url = track.get("artworkUrl100", "")
+                if art_url:
+                    art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                
+                release_date = track.get("releaseDate", "")
+                year = release_date[:4] if release_date else None
+                
+                info = {
+                    "title": track.get("trackName"),
+                    "artist": track.get("artistName"),
+                    "album": track.get("collectionName"),
+                    "year": year,
+                    "track_number": track.get("trackNumber"),
+                    "track_total": track.get("trackCount"),
+                    "album_artist": track.get("artistName"),
+                    "album_art": art_url,
+                    "query": query
+                }
+                
+                # Получаем жанры из Last.fm
+                print("[*] Получение жанров из Last.fm...")
+                genres = fetch_lastfm_genres(info["artist"], info["title"])
+                if genres:
+                    info["genre"] = genres
+                    print(f"[+] Получены жанры: {genres}")
+                    
+                return info
+    except Exception as e:
+        print(f"[!] iTunes: Ошибка поиска по запросу: {e}")
+    return None

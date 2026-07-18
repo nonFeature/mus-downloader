@@ -3,4 +3,5 @@
 /__pycache__
 /sources/__pycache__
 /downloads
+/slskd
 docker-compose.yml

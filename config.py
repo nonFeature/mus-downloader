@@ -23,6 +23,8 @@ YANDEX_TOKEN = os.getenv("YANDEX_TOKEN", "")
 
 # Конфигурация Сбер Звук (zvuk.com)
 ZVUK_TOKEN = os.getenv("ZVUK_TOKEN", "")
+LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "b25b959554ed7605872275b2bd96f24d")
+DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
 
 # Конфигурация Monochrome
 MONOCHROME_HIFI_URL = os.getenv("MONOCHROME_HIFI_URL", "https://api.monochrome.tf").rstrip("/")

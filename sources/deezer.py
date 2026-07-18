@@ -118,3 +118,26 @@ def download_deezer_track(track_id: str, dest_dir: Path, target_quality: str = "
     except Exception as e:
         print(f"[!] Deezer: Ошибка скачивания трека {track_id}: {e}")
     return None
+
+def search_deezer_track(artist: str, title: str) -> Optional[str]:
+    """
+    Ищет трек по артисту и названию на Deezer.
+    Возвращает track_id первого совпадения.
+    """
+    query = f"{artist} - {title}"
+    try:
+        r = httpx.get("https://api.deezer.com/search", params={"q": query}, timeout=10)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data:
+                # Пытаемся найти максимально точное соответствие
+                for track in data:
+                    track_artist = track.get("artist", {}).get("name", "").lower()
+                    track_title = track.get("title", "").lower()
+                    if artist.lower() in track_artist and title.lower() in track_title:
+                        return str(track.get("id"))
+                # Иначе берем первый результат
+                return str(data[0].get("id"))
+    except Exception as e:
+        print(f"[!] Deezer: Ошибка поиска трека: {e}")
+    return None

@@ -7,6 +7,7 @@ import metadata
 import tagger
 from sources import (
     download_deezer_track,
+    search_deezer_track,
     download_monochrome_track,
     search_soulseek,
     download_soulseek_track,
@@ -17,17 +18,22 @@ from sources import (
     download_fallback_track
 )
 
-def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[Path]:
+def download_track_by_link(url_or_query: str, target_quality: str = "FLAC") -> Optional[Path]:
     """
-    Основная логика скачивания трека по ссылке:
-    1. Получение метаданных (через song.link и MusicBrainz).
+    Основная логика скачивания трека по ссылке или поисковому запросу:
+    1. Получение метаданных (через song.link/iTunes/MusicBrainz).
     2. Опрос источников по приоритету.
     3. Скачивание и запись тегов.
     """
     # 1. Извлекаем метаданные
-    meta = metadata.get_track_metadata(url)
+    is_url = url_or_query.startswith("http://") or url_or_query.startswith("https://")
+    if is_url:
+        meta = metadata.get_track_metadata(url_or_query)
+    else:
+        meta = metadata.resolve_query_metadata(url_or_query)
+        
     if not meta:
-        print("[!] Не удалось извлечь метаданные для трека.")
+        print("[!] Не удалось найти или извлечь метаданные для трека.")
         return None
         
     artist = meta.get("artist") or "Unknown Artist"
@@ -48,9 +54,14 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
     # 2. Пытаемся скачать из различных источников по цепочке
     
     # --- Источник 1: Deezer ---
-    if meta.get("deezer_id"):
-        print("\n[*] Попытка скачивания через Deezer (Echo Proxy)...")
-        file_path = download_deezer_track(meta["deezer_id"], config.DOWNLOAD_DIR, target_quality)
+    deezer_id = meta.get("deezer_id")
+    if not deezer_id and artist and title:
+        print("\n[*] Поиск ID трека в Deezer...")
+        deezer_id = search_deezer_track(artist, title)
+        
+    if not file_path and deezer_id:
+        print(f"\n[*] Попытка скачивания через Deezer (Echo Proxy, ID: {deezer_id})...")
+        file_path = download_deezer_track(deezer_id, config.DOWNLOAD_DIR, target_quality)
         if file_path:
             source_used = "Deezer"
             
@@ -108,7 +119,7 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
     if not file_path:
         print("\n[*] Все FLAC-источники недоступны. Запуск фолбека (YouTube/SoundCloud)...")
         fallback_url = meta.get("youtube_music_url") or meta.get("soundcloud_url") or url
-        file_path = download_fallback_track(fallback_url, config.DOWNLOAD_DIR)
+        file_path = download_fallback_track(fallback_url, config.DOWNLOAD_DIR, artist=artist, title=title)
         if file_path:
             source_used = "Fallback (yt-dlp)"
             
@@ -131,7 +142,8 @@ def download_track_by_link(url: str, target_quality: str = "FLAC") -> Optional[P
             album_art_url=meta.get("album_art"),
             album_artist=meta.get("album_artist"),
             source=source_used,
-            source_quality=quality_label
+            source_quality=quality_label,
+            genre=meta.get("genre")
         )
         return file_path
     else:
