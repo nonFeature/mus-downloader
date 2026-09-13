@@ -9,9 +9,9 @@ A multi-source, high-quality music downloader written in Python. It supports dow
 ## Features
 
 - **Multi-Source Fallback Chain**: 
-  1. **YouTube Music (CSVMusic Matching Engine)**: Primary source for authentic MP3 320 kbps (LAME CBR). Strict candidate scoring, duration verification within ±10%, filtering out covers, remixes, live performances, and nightcore.
-  2. **Deezer**: Authentic lossless FLAC stream extraction and high-speed MP3 320 kbps via on-the-fly Blowfish decryption.
-  3. **Soulseek**: Peer-to-peer search via `slskd` daemon for FLAC Lossless and MP3 320 kbps fallback.
+  1. **Soulseek (slskd)**: Primary P2P source when configured. The quickest way to get the freshest music releases, unreleased tracks, and scene rips in FLAC Lossless and MP3 320 kbps.
+  2. **YouTube Music (CSVMusic Matching Engine)**: Primary streaming source for authentic MP3 320 kbps (LAME CBR). Strict candidate scoring, duration verification within ±10%, filtering out covers, remixes, live performances, and nightcore.
+  3. **Deezer**: Authentic lossless FLAC stream extraction and high-speed MP3 320 kbps via on-the-fly Blowfish decryption.
   4. **Direct Stream Fallback**: Direct stream extraction via `yt-dlp` for edge cases.
 - **Zero-Key Core**: Downloading tracks requires 0 API keys. Optional keys are strictly for extra metadata enrichment (Last.fm, Discogs).
 - **Metadata Resolving**: Accepts any song link (Spotify, Apple Music, Deezer, YouTube Music, etc.) or text query. Resolves cross-platform links via song.link, fetches clean ISRC codes, and queries MusicBrainz / iTunes / Last.fm to fetch accurate metadata and high-res cover art.
@@ -114,9 +114,9 @@ uv run main.py "MGMT - Kids"
 ## Возможности
 
 - **Интеллектуальная цепочка источников**:
-  1. **YouTube Music (алгоритм CSVMusic)**: Основной источник для MP3 320 kbps (LAME CBR). Строгая проверка хронометража (±10%), токенизация, отсев каверов, ремиксов, лайвов и nightcore.
-  2. **Deezer**: Скачивание и расшифровка оригинального FLAC Lossless потока и MP3 320 kbps на лету с использованием Blowfish.
-  3. **Soulseek**: Поиск FLAC Lossless и MP3 320kbps в P2P-сети через API демона `slskd`.
+  1. **Soulseek (демон slskd)**: Первичный P2P-источник (при настроенном `SLSKD_URL`). Идеален для самых свежих релизов, редких треков, микстейпов и оригинальных сцен-рипов в FLAC Lossless и MP3 320kbps.
+  2. **YouTube Music (алгоритм CSVMusic)**: Основной стриминговый источник для MP3 320 kbps (LAME CBR). Строгая проверка хронометража (±10%), токенизация, отсев каверов, ремиксов, лайвов и nightcore.
+  3. **Deezer**: Скачивание и расшифровка оригинального FLAC Lossless потока и MP3 320 kbps на лету с использованием Blowfish.
   4. **Прямой фолбек**: Прямое скачивание потока через `yt-dlp`.
 - **Полная независимость от обязательных API-ключей**: Скачивание работает сразу "из коробки" без каких-либо платных ключей или токенов. Опциональные ключи используются исключительно для расширенных баз метаданных (Last.fm, Discogs).
 - **Разрешение метаданных**: Принимает ссылки любых музыкальных сервисов (Spotify, Apple Music, Deezer, YouTube Music и др.) или текстовые поисковые запросы. Определяет ISRC с помощью song.link и извлекает чистые альбомные метаданные из баз MusicBrainz / iTunes / Last.fm (игнорирует нежелательные ремиксы и сборники).

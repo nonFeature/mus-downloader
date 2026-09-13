@@ -19,6 +19,10 @@ _PENALTY_TERMS = {
     "remx", "rmx"
 }
 
+_CLEAN_TERMS = {
+    "clean", "censored", "radio edit", "clean version", "clean edit", "edited version"
+}
+
 _VERSION_PATTERNS = {
     "live": r"\blive\b",
     "acoustic": r"\bacoustic\b",
@@ -28,6 +32,12 @@ _VERSION_PATTERNS = {
     "single": r"\bsingle version\b|\boriginal single\b|\bu\.?s\.? single\b",
     "remaster": r"\bremaster(?:ed)?\b",
     "album": r"\balbum version\b",
+    "clean": r"\bclean\b|\bcensored\b|\bradio edit\b|\bclean version\b|\bclean edit\b",
+    "cover": r"\bcover\b",
+    "parody": r"\bparody\b",
+    "tribute": r"\btribute\b",
+    "karaoke": r"\bkaraoke\b",
+    "instrumental": r"\binstrumental\b",
 }
 
 _CAST_PENALTY_TERMS = {"cast", "original cast", "tribute band", "musical", "orchestra"}
@@ -157,8 +167,31 @@ def score_candidate(track: Dict, cand: Dict) -> float:
     if "tribute" in titleblob and artist_overlap < 0.5:
         p_pen += 0.25
 
+    # Проверка явного запроса на цензуру / чистую версию
+    clean_requested = any(re.search(r"\b" + re.escape(w) + r"\b", requested_title) for w in ("clean", "censored", "radio edit", "clean version"))
+    cand_is_explicit = bool(cand.get("isExplicit", False))
+    cand_has_clean_marker = any(re.search(r"\b" + re.escape(w) + r"\b", titleblob) for w in _CLEAN_TERMS)
+
+    explicit_boost = 0.0
+    if not clean_requested:
+        # Если чистая версия не запрашивалась - даем жесткий штраф за цензуру/radio edit
+        if cand_has_clean_marker:
+            p_pen += 0.45
+        # Бонус за честную Explicit версию
+        if cand_is_explicit:
+            explicit_boost += 0.22
+        # Если известно, что трек оригинально explicit, а кандидат - нет:
+        if track.get("explicit") is True and not cand_is_explicit:
+            p_pen += 0.35
+    else:
+        # Если пользователь явно запросил clean:
+        if cand_is_explicit:
+            p_pen += 0.45
+        if cand_has_clean_marker:
+            explicit_boost += 0.20
+
     version_boost = 0.14 if requested_versions and requested_versions == candidate_versions else 0.0
-    total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost + version_boost - p_pen)
+    total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost + version_boost + explicit_boost - p_pen)
     return min(total, 0.99)
 
 def _strip_noise(title: str) -> str:
@@ -232,6 +265,7 @@ def _search_ytmusic(yt: YTMusic, query: str, search_filter: str, limit: int) -> 
             "duration_seconds": _duration_s(duration_val),
             "album": r.get("album"),
             "source": source,
+            "isExplicit": bool(r.get("isExplicit", False)),
         })
     return cands
 
@@ -241,6 +275,7 @@ def find_best_youtube_match(
     duration: Optional[float] = None,
     album: Optional[str] = None,
     isrc: Optional[str] = None,
+    explicit: Optional[bool] = None,
     yt_instance: Optional[YTMusic] = None,
 ) -> Tuple[Optional[Dict], float, List[Dict]]:
     """
@@ -254,6 +289,7 @@ def find_best_youtube_match(
         "duration": duration,
         "album": album,
         "isrc": isrc,
+        "explicit": explicit,
     }
 
     yt = yt_instance or YTMusic()
@@ -294,12 +330,17 @@ def find_best_youtube_match(
     if not scored:
         return None, 0.0, []
 
-    # Сортируем: сначала те, у кого score >= CONFIDENCE_MIN, предпочтение "music" источнику, затем по score
+    # Сортируем: сначала те, у кого score >= CONFIDENCE_MIN,
+    # затем при отсутствии запроса на clean — предпочтение Explicit-версиям,
+    # затем "music" источнику, затем по score
+    clean_requested = any(re.search(r"\b" + re.escape(w) + r"\b", norm_text(title)) for w in ("clean", "censored", "radio edit", "clean version"))
+
     def sort_key(c):
         s = c["score"]
-        is_music = 1 if c.get("source") == "music" else 0
         conf_ok = 1 if s >= CONFIDENCE_MIN else 0
-        return (conf_ok, is_music if conf_ok else 0, s)
+        is_music = 1 if c.get("source") == "music" else 0
+        is_explicit = 1 if (not clean_requested and c.get("isExplicit")) else 0
+        return (conf_ok, is_explicit, is_music if conf_ok else 0, s)
 
     scored.sort(key=sort_key, reverse=True)
     best = scored[0]

@@ -47,11 +47,12 @@ def download_youtube_track(
     duration: Optional[float] = None,
     album: Optional[str] = None,
     isrc: Optional[str] = None,
-    direct_url: Optional[str] = None
+    direct_url: Optional[str] = None,
+    explicit: Optional[bool] = None
 ) -> Optional[Path]:
     """
     Ищет и скачивает трек с YouTube Music по алгоритму CSVMusic (с валидацией длительности
-    и отсевом каверов/live) и конвертирует в MP3 320 kbps (LAME).
+    и отсевом каверов/live/clean) и конвертирует в MP3 320 kbps (LAME).
     Если уверенность низкая (< 0.6), возвращает None для перехода к Soulseek.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +76,8 @@ def download_youtube_track(
             title=title,
             duration=duration,
             album=album,
-            isrc=isrc
+            isrc=isrc,
+            explicit=explicit
         )
 
         if not best_match:

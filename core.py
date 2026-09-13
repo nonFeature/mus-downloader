@@ -21,9 +21,9 @@ from sources import (
 def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Optional[Path]:
     """
     Основная логика скачивания трека:
-    - По умолчанию качает в честный MP3 320kbps (LAME CBR) через YouTube Music (CSVMusic matcher).
-    - Если на YouTube трек не найден или не прошёл фильтры — фолбек на Soulseek / Deezer.
-    - При запросе FLAC опрашивает только реальные FLAC-источники: Deezer и Soulseek.
+    - При наличии SLSKD_URL в первую очередь опрашивает Soulseek (наиболее свежие релизы и P2P).
+    - Затем YouTube Music (CSVMusic matcher в честный MP3 320kbps CBR) и Deezer.
+    - При запросе FLAC опрашивает только реальные FLAC-источники: Soulseek и Deezer.
     """
     # 1. Извлекаем метаданные
     is_url = url_or_query.startswith("http://") or url_or_query.startswith("https://")
@@ -42,12 +42,15 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
     duration = meta.get("duration")
     album = meta.get("album")
     
+    explicit = meta.get("explicit")
+    
     print(f"\n[*] Найдена информация о треке:")
     print(f"    Исполнитель : {artist}")
     print(f"    Название    : {title}")
     print(f"    Альбом      : {album or 'N/A'}")
     print(f"    Год         : {meta.get('year', 'N/A')}")
     print(f"    ISRC        : {isrc or 'N/A'}")
+    print(f"    Explicit    : {'Да [E]' if explicit else 'Нет'}")
     print(f"    Длительность: {round(duration, 1) if duration else 'N/A'} сек")
     print(f"    Номер трека : {meta.get('track_number', 'N/A')}/{meta.get('track_total', 'N/A')}")
     print(f"    Целевое качество: {target_quality}")
@@ -59,39 +62,41 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
     if not deezer_id and artist and title:
         deezer_id = search_deezer_track(artist, title)
 
-    # 2. Логика для FLAC (строгий поиск lossless только в Deezer и Soulseek)
+    # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
     if target_quality == "FLAC":
-        print("\n[*] Режим FLAC: поиск честного Lossless (Deezer / Soulseek)...")
+        print("\n[*] Режим FLAC: поиск честного Lossless (Soulseek / Deezer)...")
         
-        # Шаг FLAC-1: Deezer (только если реально отдается FLAC)
-        if deezer_id:
-            print(f"[*] Проверка наличия FLAC в Deezer (ID: {deezer_id})...")
-            file_path = download_deezer_track(deezer_id, config.DOWNLOAD_DIR, target_quality="FLAC", artist=artist, title=title)
-            if file_path and file_path.suffix.lower() == ".flac":
-                source_used = "Deezer FLAC"
-                
-        # Шаг FLAC-2: Soulseek (только FLAC)
-        if not file_path and config.SLSKD_URL:
+        # Шаг FLAC-1: Soulseek (только FLAC, в первую очередь)
+        if config.SLSKD_URL:
             print("[*] Поиск FLAC на Soulseek...")
-            candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC")
+            candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
             if candidates:
                 best = candidates[0]
                 file_path = download_soulseek_track(
                     best["slskd_username"],
                     best["slskd_filename"],
                     best["slskd_size"],
-                    config.DOWNLOAD_DIR
+                    config.DOWNLOAD_DIR,
+                    target_quality="FLAC"
                 )
                 if file_path:
                     source_used = f"Soulseek ({best['quality']})"
-                    
+
+        # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
+        if not file_path and deezer_id:
+            print(f"[*] Проверка наличия FLAC в Deezer (ID: {deezer_id})...")
+            file_path = download_deezer_track(deezer_id, config.DOWNLOAD_DIR, target_quality="FLAC", artist=artist, title=title)
+            if file_path and file_path.suffix.lower() == ".flac":
+                source_used = "Deezer FLAC"
+
         if not file_path:
-            print("\n[!] Честный FLAC не найден ни в Deezer, ни в Soulseek.")
+            print("\n[!] Честный FLAC не найден ни в Soulseek, ни в Deezer.")
             print("[*] Мягкое переключение на загрузку MP3 320kbps...")
 
     # 3. Логика для MP3 320kbps (основной режим или откат с FLAC)
+    # Приоритет: YouTube Music -> Deezer -> Soulseek -> yt-dlp fallback
     if not file_path:
-        # Шаг MP3-1: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов)
+        # Шаг MP3-1: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
         print("\n[*] Попытка поиска и скачивания с YouTube Music (CSVMusic matcher)...")
         direct_yt = meta.get("youtube_music_url") or meta.get("soundcloud_url") or (url_or_query if is_url else None)
         file_path = download_youtube_track(
@@ -101,7 +106,8 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
             duration=duration,
             album=album,
             isrc=isrc,
-            direct_url=direct_yt
+            direct_url=direct_yt,
+            explicit=explicit
         )
         if file_path:
             source_used = "YouTube Music (MP3 320)"
@@ -116,14 +122,15 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
         # Шаг MP3-3: Soulseek (slsk), если настроен slskd
         if not file_path and config.SLSKD_URL:
             print("\n[*] Поиск MP3 на Soulseek...")
-            candidates = search_soulseek(artist, title, limit=3, target_quality="MP3")
+            candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
             if candidates:
                 best = candidates[0]
                 file_path = download_soulseek_track(
                     best["slskd_username"],
                     best["slskd_filename"],
                     best["slskd_size"],
-                    config.DOWNLOAD_DIR
+                    config.DOWNLOAD_DIR,
+                    target_quality="MP3"
                 )
                 if file_path:
                     source_used = f"Soulseek ({best['quality']})"

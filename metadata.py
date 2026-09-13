@@ -258,6 +258,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
                 if match:
                     year = match.group(1)
                     
+            explicit = bool(data.get("explicit_lyrics") or data.get("explicit_content_lyrics") == 1)
             return {
                 "isrc": data.get("isrc"),
                 "album": album_info.get("title"),
@@ -266,6 +267,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
                 "album_artist": artist_info.get("name"),
                 "album_art": album_info.get("cover_xl") or album_info.get("cover_big") or album_info.get("cover_medium"),
                 "duration": data.get("duration"),
+                "explicit": explicit,
             }
     except Exception as e:
         print(f"[!] Ошибка запроса метаданных из Deezer: {e}")
@@ -315,6 +317,25 @@ def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[
         print(f"[!] Ошибка поиска по ISRC в MusicBrainz: {e}")
     return None
 
+def is_compilation_album(album_title: Optional[str], album_artist: Optional[str] = "") -> bool:
+    """
+    Определяет, является ли альбом сборником / компиляцией / Various Artists.
+    """
+    if not album_title:
+        return False
+    alb_low = album_title.lower()
+    art_low = (album_artist or "").lower()
+    if art_low in ("various artists", "various", "va"):
+        return True
+    compilation_markers = [
+        "various", "now that's what", "hits ", "greatest hits", "best of",
+        "collection", "the very best", "compilation", "super raccolta",
+        "dance mania", "rare rnb", "vol.", "volume ", "soundtrack", "ost",
+        "tribute", "karaoke", "top 100", "top 50", "party hits", "summer hits",
+        "club hits", "dance hits", "extracts", "sampler"
+    ]
+    return any(marker in alb_low for marker in compilation_markers)
+
 def score_release(rel: dict, rec_artist: str, expected_artist: str) -> int:
     """
     Вычисляет оценку соответствия релиза оригинальному студийному альбому.
@@ -338,12 +359,8 @@ def score_release(rel: dict, rec_artist: str, expected_artist: str) -> int:
         score -= 8
         
     # Штраф за маркеры сборников в названии релиза
-    _bad_title_fragments = [
-        "various", "now that's what", "hits ", "greatest hits", "best of", 
-        "collection", "the very best", "extracts", "sampler", "promo", "compilation"
-    ]
-    if any(frag in title for frag in _bad_title_fragments):
-        score -= 12
+    if is_compilation_album(title):
+        score -= 15
         
     # Проверяем исполнителя релиза
     rel_credits = rel.get("artist-credit", [])
@@ -707,13 +724,7 @@ def get_track_metadata(url: str) -> dict:
     album_artist = info.get("album_artist") or ""
     
     # Проверяем, не сборник ли это
-    is_compilation = False
-    if album_artist.lower() in ("various artists", "various"):
-        is_compilation = True
-    else:
-        _bad_words = ["various", "now that's what", "hits ", "greatest hits", "best of", "collection", "the very best", "compilation"]
-        if album and any(w in album.lower() for w in _bad_words):
-            is_compilation = True
+    is_compilation = is_compilation_album(album, album_artist)
             
     # Если это сборник или отсутствуют метаданные, ищем в MusicBrainz
     mb_data = None
@@ -743,157 +754,188 @@ def get_track_metadata(url: str) -> dict:
 
 def resolve_query_metadata(query: str) -> Optional[dict]:
     """
-    Разрешает поисковый запрос (например, 'Artist - Title') в структурированные метаданные.
-    Приоритет: YouTube Music -> iTunes (с валидацией версий) -> Deezer -> Last.fm.
+    Разрешает поисковый запрос (например, 'Artist - Title') в структурированные канонические метаданные.
+    Приоритет: iTunes/Apple Music (с отсевом сборников) -> song.link -> Deezer -> Last.fm.
+    Фолбек: YouTube Music -> MusicBrainz.
     """
-    print(f"[*] Поиск трека в каталоге YouTube Music: '{query}'")
+    print(f"[*] Поиск канонических метаданных для: '{query}'")
     
-    best_track: Optional[dict] = None
-    best_score = -1.0
-    
-    # 1. Поиск через YouTube Music (наиболее полный и нецензурированный каталог)
+    # 1. Сначала опрашиваем официальный каталог iTunes / Apple Music.
+    # Это гарантирует получение студийного альбома (а не VA / Rare RnB), канонических имен и качественного арта.
+    itunes_candidate = None
     try:
-        from ytmusicapi import YTMusic
-        yt = YTMusic()
-        yt_results = yt.search(query, filter="songs", limit=10)
-        for cand in yt_results:
-            cand_title = cand.get("title", "")
-            artists = ", ".join(a.get("name", "") for a in cand.get("artists", []))
-            s = score_text_candidate(cand_title, artists, query)
-            if s > best_score:
-                best_score = s
-                
-                # Извлекаем качественную обложку
-                art_url = None
-                thumbs = cand.get("thumbnails", [])
-                if thumbs:
-                    raw_art = thumbs[-1].get("url", "")
-                    art_url = re.sub(r"=w\d+-h\d+.*", "=w1000-h1000-l90-rj", raw_art)
-                    if "=w1000-h1000" not in art_url and "=s" not in art_url:
-                        art_url = raw_art
-                        
-                best_track = {
-                    "title": cand_title,
-                    "artist": artists,
-                    "album": cand.get("album", {}).get("name") if cand.get("album") else None,
-                    "album_id": cand.get("album", {}).get("id") if cand.get("album") else None,
-                    "duration": cand.get("duration_seconds"),
-                    "youtube_music_url": f"https://music.youtube.com/watch?v={cand.get('videoId')}",
-                    "youtube_video_id": cand.get("videoId"),
-                    "album_art": art_url,
-                    "album_artist": artists,
-                    "query": query,
-                }
-    except Exception as e:
-        print(f"[!] YouTube Music: Ошибка поиска: {e}")
-        
-    # Если найден уверенный результат в YTMusic (score >= 0.5)
-    if best_track and best_score >= 0.5:
-        # Пытаемся получить год и номер трека из альбома YTMusic
-        if best_track.get("album_id") and not best_track.get("year"):
-            try:
-                album_data = yt.get_album(best_track["album_id"])
-                if album_data:
-                    best_track["year"] = album_data.get("year")
-                    best_track["track_total"] = album_data.get("trackCount")
-                    for idx, tr in enumerate(album_data.get("tracks", []), 1):
-                        if tr.get("videoId") == best_track.get("youtube_video_id"):
-                            best_track["track_number"] = idx
-                            break
-            except Exception:
-                pass
-                
-        # 2. Дополняем метаданными из iTunes (1000x1000 арт, точный год, номер трека)
-        itunes_meta = fetch_itunes_metadata(artist=best_track["artist"], title=best_track["title"])
-        if itunes_meta:
-            if itunes_meta.get("album_art"):
-                best_track["album_art"] = itunes_meta["album_art"]
-            if itunes_meta.get("year") and not best_track.get("year"):
-                best_track["year"] = itunes_meta["year"]
-            if itunes_meta.get("track_number") and not best_track.get("track_number"):
-                best_track["track_number"] = itunes_meta["track_number"]
-                best_track["track_total"] = itunes_meta.get("track_total")
-            if itunes_meta.get("album") and not best_track.get("album"):
-                best_track["album"] = itunes_meta["album"]
-                
-        # 3. Дополняем Deezer ID и метаданными
-        try:
-            from sources.deezer import search_deezer_track
-            dz_id = search_deezer_track(best_track["artist"], best_track["title"])
-            if dz_id:
-                best_track["deezer_id"] = dz_id
-                dz_meta = fetch_deezer_metadata(dz_id)
-                if dz_meta:
-                    if dz_meta.get("album_art") and not best_track.get("album_art"):
-                        best_track["album_art"] = dz_meta["album_art"]
-                    if dz_meta.get("year") and not best_track.get("year"):
-                        best_track["year"] = dz_meta["year"]
-                    if dz_meta.get("isrc") and not best_track.get("isrc"):
-                        best_track["isrc"] = dz_meta["isrc"]
-                    if dz_meta.get("track_number") and not best_track.get("track_number"):
-                        best_track["track_number"] = dz_meta["track_number"]
-                        best_track["track_total"] = dz_meta.get("track_total")
-        except Exception:
-            pass
-            
-        # 4. Жанры из Last.fm
-        try:
-            genres = fetch_lastfm_genres(best_track["artist"], best_track["title"])
-            if genres:
-                best_track["genre"] = genres
-        except Exception:
-            pass
-            
-        return best_track
-
-    # Фолбек на iTunes, если YTMusic ничего не дал
-    print(f"[*] Фолбек: Поиск трека в каталоге iTunes: '{query}'")
-    params = {
-        "term": query,
-        "media": "music",
-        "entity": "musicTrack",
-        "limit": 10
-    }
-    try:
-        r = httpx.get("https://itunes.apple.com/search", params=params, timeout=6)
+        r = httpx.get("https://itunes.apple.com/search", params={
+            "term": query,
+            "media": "music",
+            "entity": "musicTrack",
+            "limit": 10
+        }, timeout=8)
         if r.status_code == 200:
             results = r.json().get("results", [])
-            if results:
-                best_itunes = None
-                best_itunes_score = -1.0
-                for track in results:
-                    s = score_text_candidate(track.get("trackName", ""), track.get("artistName", ""), query)
-                    if s > best_itunes_score:
-                        best_itunes_score = s
-                        best_itunes = track
-                        
-                if best_itunes and best_itunes_score >= 0.4:
-                    art_url = best_itunes.get("artworkUrl100", "")
-                    if art_url:
-                        art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
-                    
-                    release_date = best_itunes.get("releaseDate", "")
-                    year = release_date[:4] if release_date else None
-                    
-                    info = {
-                        "title": best_itunes.get("trackName"),
-                        "artist": best_itunes.get("artistName"),
-                        "album": best_itunes.get("collectionName"),
-                        "year": year,
-                        "track_number": best_itunes.get("trackNumber"),
-                        "track_total": best_itunes.get("trackCount"),
-                        "album_artist": best_itunes.get("artistName"),
-                        "album_art": art_url,
-                        "query": query
-                    }
-                    try:
-                        genres = fetch_lastfm_genres(info["artist"], info["title"])
-                        if genres:
-                            info["genre"] = genres
-                    except Exception:
-                        pass
-                    return info
+            best_it_score = -1.0
+            for t in results:
+                t_name = t.get("trackName", "")
+                a_name = t.get("artistName", "")
+                c_name = t.get("collectionName", "")
+                ca_name = t.get("collectionArtistName", "")
+                s = score_text_candidate(t_name, a_name, query)
+                if is_compilation_album(c_name, ca_name):
+                    s -= 0.45
+                if t.get("trackExplicitness") == "explicit":
+                    s += 0.05
+                if s > best_it_score:
+                    best_it_score = s
+                    itunes_candidate = t
+            if best_it_score < 0.45:
+                itunes_candidate = None
     except Exception as e:
-        print(f"[!] iTunes: Ошибка поиска по запросу: {e}")
-        
-    return None
+        print(f"[!] iTunes: Ошибка поиска: {e}")
+
+    meta: Optional[dict] = None
+    if itunes_candidate:
+        title = itunes_candidate.get("trackName")
+        artist = itunes_candidate.get("artistName")
+        album = itunes_candidate.get("collectionName")
+        album_artist = itunes_candidate.get("collectionArtistName") or artist
+        year = (itunes_candidate.get("releaseDate") or "")[:4]
+        art_url = (itunes_candidate.get("artworkUrl100") or "").replace("100x100bb.jpg", "1000x1000bb.jpg")
+        apple_url = itunes_candidate.get("trackViewUrl")
+        # Если трек помечен explicit или cleaned (зацензуренная версия), значит оригинал трека - Explicit!
+        explicit = itunes_candidate.get("trackExplicitness") in ("explicit", "cleaned")
+        duration = (itunes_candidate.get("trackTimeMillis", 0) / 1000.0) if itunes_candidate.get("trackTimeMillis") else None
+
+        meta = {
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "album_artist": album_artist,
+            "year": year,
+            "track_number": itunes_candidate.get("trackNumber"),
+            "track_total": itunes_candidate.get("trackCount"),
+            "album_art": art_url,
+            "duration": duration,
+            "explicit": explicit,
+            "apple_music_url": apple_url,
+            "query": query,
+            "deezer_id": None,
+            "isrc": None,
+            "youtube_music_url": None,
+            "spotify_url": None,
+        }
+
+        # Отправляем ссылку на Apple Music в song.link для связки с Deezer и ISRC
+        if apple_url:
+            print(f"[*] Разрешение связей трека через song.link...")
+            sl_meta = resolve_song_link(apple_url)
+            if sl_meta:
+                for k in ("deezer_id", "spotify_url", "youtube_music_url", "isrc"):
+                    if sl_meta.get(k) and not meta.get(k):
+                        meta[k] = sl_meta[k]
+                if sl_meta.get("duration") and not meta.get("duration"):
+                    meta["duration"] = sl_meta["duration"]
+
+        # Если найден Deezer ID, обогащаем официальными метаданными Deezer
+        if not meta.get("deezer_id") and meta.get("artist") and meta.get("title"):
+            try:
+                from sources.deezer import search_deezer_track
+                dz_id = search_deezer_track(meta["artist"], meta["title"])
+                if dz_id:
+                    meta["deezer_id"] = dz_id
+            except Exception:
+                pass
+
+        if meta.get("deezer_id"):
+            dz = fetch_deezer_metadata(meta["deezer_id"])
+            if dz:
+                for k, v in dz.items():
+                    if v and not meta.get(k):
+                        meta[k] = v
+
+    # 2. Фолбек на YouTube Music, если iTunes не нашел трек
+    if not meta:
+        print(f"[*] Поиск трека в каталоге YouTube Music: '{query}'")
+        best_track: Optional[dict] = None
+        best_score = -1.0
+        try:
+            from ytmusicapi import YTMusic
+            yt = YTMusic()
+            yt_results = yt.search(query, filter="songs", limit=10)
+            for cand in yt_results:
+                cand_title = cand.get("title", "")
+                artists = ", ".join(a.get("name", "") for a in cand.get("artists", []))
+                s = score_text_candidate(cand_title, artists, query)
+                cand_album = cand.get("album", {}).get("name") if cand.get("album") else ""
+                if is_compilation_album(cand_album, artists):
+                    s -= 0.40
+                if cand.get("isExplicit"):
+                    s += 0.20
+                if s > best_score:
+                    best_score = s
+                    art_url = None
+                    thumbs = cand.get("thumbnails", [])
+                    if thumbs:
+                        raw_art = thumbs[-1].get("url", "")
+                        art_url = re.sub(r"=w\d+-h\d+.*", "=w1000-h1000-l90-rj", raw_art)
+                        if "=w1000-h1000" not in art_url and "=s" not in art_url:
+                            art_url = raw_art
+                            
+                    best_track = {
+                        "title": cand_title,
+                        "artist": artists,
+                        "album": cand.get("album", {}).get("name") if cand.get("album") else None,
+                        "album_id": cand.get("album", {}).get("id") if cand.get("album") else None,
+                        "duration": cand.get("duration_seconds"),
+                        "youtube_music_url": f"https://music.youtube.com/watch?v={cand.get('videoId')}",
+                        "youtube_video_id": cand.get("videoId"),
+                        "album_art": art_url,
+                        "album_artist": artists,
+                        "explicit": bool(cand.get("isExplicit", False)),
+                        "query": query,
+                    }
+        except Exception as e:
+            print(f"[!] YouTube Music: Ошибка поиска: {e}")
+            
+        if best_track and best_score >= 0.45:
+            meta = best_track
+            if meta.get("album_id") and not meta.get("year"):
+                try:
+                    album_data = yt.get_album(meta["album_id"])
+                    if album_data:
+                        meta["year"] = album_data.get("year")
+                        meta["track_total"] = album_data.get("trackCount")
+                        for idx, tr in enumerate(album_data.get("tracks", []), 1):
+                            if tr.get("videoId") == meta.get("youtube_video_id"):
+                                meta["track_number"] = idx
+                                break
+                except Exception:
+                    pass
+
+    if not meta:
+        return None
+
+    # 3. Фильтрация сборников: если альбом все еще является сборником, восстанавливаем через MusicBrainz
+    album = meta.get("album")
+    album_artist = meta.get("album_artist") or meta.get("artist") or ""
+    if is_compilation_album(album, album_artist) or not album:
+        isrc = meta.get("isrc")
+        mb_data = None
+        if isrc:
+            print(f"[*] Ищем оригинальный студийный альбом в MusicBrainz по ISRC: {isrc}")
+            mb_data = fetch_musicbrainz_by_isrc(isrc, meta.get("artist", ""))
+        if not mb_data and meta.get("artist") and meta.get("title"):
+            print(f"[*] Ищем оригинальный студийный альбом в MusicBrainz по тексту: {meta['artist']} - {meta['title']}")
+            mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
+        if mb_data:
+            for key in ("album", "year", "track_number", "track_total", "album_artist"):
+                if mb_data.get(key):
+                    meta[key] = mb_data[key]
+
+    # 4. Получение жанров из Last.fm
+    try:
+        genres = fetch_lastfm_genres(meta.get("artist", ""), meta.get("title", ""))
+        if genres:
+            meta["genre"] = genres
+    except Exception:
+        pass
+
+    return meta

@@ -27,7 +27,7 @@ def main():
     
     if not args.url:
         print("=== Multi-source Music Downloader ===")
-        print("Основной источник: YouTube Music (умный подбор MP3 320kbps) + Deezer FLAC + Soulseek.")
+        print("Источники: Soulseek (P2P свежие релизы) + YouTube Music (MP3 320kbps) + Deezer FLAC.")
         print("Поддерживаемые ссылки: Spotify, Apple Music, Deezer, YouTube Music, SoundCloud, Яндекс.Музыка и текстовые запросы.\n")
         
         args.url = input("Введите ссылку на трек или название: ").strip()
