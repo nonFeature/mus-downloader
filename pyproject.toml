@@ -15,10 +15,9 @@ authors = [
 dependencies = [
     "pycryptodome>=3.18.0",
     "mutagen>=1.46.0",
-    "yandex-music>=2.6.0",
     "httpx>=0.24.0",
     "yt-dlp>=2024.0.0",
-    "zvuk-music>=0.1.0",
+    "ytmusicapi>=1.10.3",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +29,12 @@ dev = [
 
 [tool.uv]
 managed = true
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

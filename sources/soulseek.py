@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from config import SLSKD_URL, SLSKD_USER, SLSKD_PASS, SLSKD_DOWNLOADS_PATH
+from sources.youtube_matcher import toks, _version_markers
 
 # Кеширование токена
 _token_cache = {"token": None, "expires": 0.0}
@@ -30,43 +31,62 @@ def get_slskd_token() -> Optional[str]:
         print(f"[!] Soulseek: Ошибка авторизации slskd: {e}")
     return None
 
-def parse_slskd_quality(filename: str, file_info: dict) -> tuple[str, int]:
-    """Определяет формат аудио по расширению и метаданным."""
+def parse_slskd_quality(filename: str, file_info: dict, target_quality: str = "MP3") -> tuple[str, int]:
+    """
+    Определяет формат аудио по расширению и метаданным,
+    назначая скор с учетом целевого качества (FLAC vs MP3).
+    """
     fn_lower = filename.lower()
     bit_depth = file_info.get("bitDepth", 0)
     sample_rate = file_info.get("sampleRate", 0)
     bit_rate = file_info.get("bitRate", 0)
     
-    if fn_lower.endswith(".flac"):
-        if bit_depth >= 24:
-            return (f"FLAC {bit_depth}bit/{sample_rate//1000}kHz", 150)
-        return ("FLAC", 100)
-    elif fn_lower.endswith(".wav"):
-        return ("WAV", 95)
-    elif fn_lower.endswith(".mp3"):
-        if bit_rate >= 320:
-            return ("MP3 320", 80)
-        return (f"MP3 {bit_rate}", 50)
-    elif fn_lower.endswith(".m4a") or fn_lower.endswith(".aac"):
-        if bit_rate >= 256:
-            return ("AAC 256", 75)
-        return ("AAC", 60)
-    return ("Unknown", 30)
+    is_flac = fn_lower.endswith(".flac")
+    is_wav = fn_lower.endswith(".wav")
+    is_mp3 = fn_lower.endswith(".mp3")
+    is_aac = fn_lower.endswith(".m4a") or fn_lower.endswith(".aac")
+    
+    if target_quality == "FLAC":
+        if is_flac:
+            if bit_depth >= 24:
+                return (f"FLAC {bit_depth}bit/{sample_rate//1000}kHz", 150)
+            return ("FLAC", 100)
+        elif is_wav:
+            return ("WAV", 90)
+        # Если строго запрошен FLAC, lossy форматы получают нулевой/минимальный скор
+        return ("Non-FLAC", 0)
+    else:
+        # Режим MP3 / стандартный
+        if is_mp3 and bit_rate >= 320:
+            return ("MP3 320", 100)
+        elif is_flac:
+            # FLAC в режиме MP3 тоже отличный вариант (можно оставить или сконвертировать)
+            return ("FLAC", 95)
+        elif is_aac and bit_rate >= 256:
+            return ("AAC 256", 85)
+        elif is_mp3 and bit_rate >= 256:
+            return (f"MP3 {bit_rate}", 70)
+        elif is_mp3:
+            return (f"MP3 {bit_rate}", 40)
+        return ("Unknown", 20)
 
-def search_soulseek(artist: str, title: str, limit: int = 5) -> List[Dict[str, Any]]:
+def search_soulseek(artist: str, title: str, limit: int = 5, target_quality: str = "MP3") -> List[Dict[str, Any]]:
     """
     Ищет трек на Soulseek через slskd API.
-    Возвращает список подходящих файлов, отсортированных по качеству.
+    Возвращает список подходящих файлов, отсортированных по качеству под target_quality.
     """
     token = get_slskd_token()
     if not token:
         return []
         
     query = f"{artist} - {title}"
-    print(f"[*] Soulseek: Поиск '{query}'...")
+    print(f"[*] Soulseek: Поиск '{query}' (целевое качество: {target_quality})...")
     
     headers = {"Authorization": f"Bearer {token}"}
     results = []
+    
+    art_tokens = toks(artist)
+    tit_tokens = toks(title)
     
     try:
         # 1. Запуск поиска
@@ -79,14 +99,12 @@ def search_soulseek(artist: str, title: str, limit: int = 5) -> List[Dict[str, A
         
         # 2. Ожидание завершения поиска (макс. 15 секунд)
         start_time = time.time()
-        is_complete = False
         while time.time() - start_time < 15:
             time.sleep(1.5)
             status_resp = httpx.get(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers, timeout=5)
             if status_resp.status_code == 200:
                 status_data = status_resp.json()
                 if status_data.get("isComplete"):
-                    is_complete = True
                     break
                     
         # 3. Запрос результатов
@@ -103,16 +121,33 @@ def search_soulseek(artist: str, title: str, limit: int = 5) -> List[Dict[str, A
                         continue
                         
                     filename = f_info.get("filename", "")
-                    fn_lower = filename.lower()
+                    fn_tokens = toks(filename)
                     
-                    # Проверяем, что в имени файла есть и артист, и название
-                    art_low = artist.lower()
-                    title_low = title.lower()
-                    if art_low not in fn_lower or title_low not in fn_lower:
+                    # Проверяем совпадение токенов артиста и названия
+                    art_overlap = len(art_tokens & fn_tokens) / max(1, len(art_tokens))
+                    tit_overlap = len(tit_tokens & fn_tokens) / max(1, len(tit_tokens))
+                    
+                    if art_overlap < 0.6 or tit_overlap < 0.6:
                         continue
                         
-                    quality_label, quality_score = parse_slskd_quality(filename, f_info)
+                    quality_label, quality_score = parse_slskd_quality(filename, f_info, target_quality=target_quality)
                     
+                    if quality_score <= 0:
+                        continue
+                        
+                    # Проверяем маркеры версий (ремиксы, каверы, лайвы и т.д.)
+                    target_query = f"{artist} {title}"
+                    target_vm = _version_markers(target_query)
+                    cand_vm = _version_markers(filename)
+                    extra_vm = cand_vm - target_vm
+                    if extra_vm & {"remix", "cover", "karaoke", "instrumental", "tribute", "parody", "live"}:
+                        quality_score -= 80
+                    elif extra_vm:
+                        quality_score -= 40
+                        
+                    if quality_score <= 0:
+                        continue
+                        
                     results.append({
                         "title": title,
                         "artist": artist,
@@ -133,7 +168,7 @@ def search_soulseek(artist: str, title: str, limit: int = 5) -> List[Dict[str, A
     except Exception as e:
         print(f"[!] Soulseek: Ошибка при поиске: {e}")
         
-    # Сортируем: сначала с бесплатным слотом, затем по качеству
+    # Сортируем: сначала со свободным слотом, затем по оценке качества
     results.sort(key=lambda x: (x["has_free_slot"], x["quality_score"]), reverse=True)
     return results[:limit]
 
@@ -169,7 +204,7 @@ def download_soulseek_track(username: str, filename: str, size: int, dest_dir: P
         last_state = ""
         
         while time.time() - start_time < 120:
-            time.sleep(5)
+            time.sleep(4)
             status_resp = httpx.get(f"{SLSKD_URL}/api/v0/transfers/downloads/{username}", headers=headers, timeout=10)
             if status_resp.status_code != 200:
                 continue
@@ -216,12 +251,17 @@ def download_soulseek_track(username: str, filename: str, size: int, dest_dir: P
             return None
             
         # 3. Поиск и копирование скачанного файла
-        # slskd скачивает файлы по умолчанию в подпапку с именем пользователя
         file_name = Path(filename.replace("\\", "/")).name
         
         # Возможные пути к скачанному файлу
         search_dirs = [Path(SLSKD_DOWNLOADS_PATH)] if SLSKD_DOWNLOADS_PATH else []
-        search_dirs.extend([Path("./downloads"), Path("/downloads")])
+        search_dirs.extend([
+            dest_dir,
+            Path("./downloads"),
+            Path("/downloads"),
+            Path.home() / "Downloads" / "slskd",
+            Path.home() / ".local" / "share" / "slskd" / "downloads"
+        ])
         
         for search_dir in search_dirs:
             if not search_dir.exists():
@@ -231,19 +271,21 @@ def download_soulseek_track(username: str, filename: str, size: int, dest_dir: P
             potential_file = search_dir / username / file_name
             if potential_file.exists():
                 dest_path = dest_dir / file_name
-                shutil.copy2(potential_file, dest_path)
-                print(f"[+] Soulseek: Файл найден и скопирован: {dest_path}")
+                if potential_file.resolve() != dest_path.resolve():
+                    shutil.copy2(potential_file, dest_path)
+                print(f"[+] Soulseek: Файл найден и готов: {dest_path}")
                 return dest_path
                 
             # Ищем рекурсивно
             for found_file in search_dir.rglob(file_name):
                 if found_file.is_file():
                     dest_path = dest_dir / file_name
-                    shutil.copy2(found_file, dest_path)
-                    print(f"[+] Soulseek: Файл найден рекурсивно и скопирован: {dest_path}")
+                    if found_file.resolve() != dest_path.resolve():
+                        shutil.copy2(found_file, dest_path)
+                    print(f"[+] Soulseek: Файл найден рекурсивно: {dest_path}")
                     return dest_path
                     
-        print("[!] Soulseek: Загрузка завершена, но файл не найден в папке slskd")
+        print("[!] Soulseek: Загрузка завершена, но файл не найден в путях поиска slskd")
         
     except Exception as e:
         print(f"[!] Soulseek: Ошибка скачивания трека: {e}")

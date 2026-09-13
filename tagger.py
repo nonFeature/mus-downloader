@@ -10,8 +10,11 @@ def download_cover_art(url: str) -> tuple[bytes | None, str | None]:
     """Скачивает обложку по URL и возвращает (bytes, mime_type)"""
     if not url:
         return None, None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
     try:
-        resp = httpx.get(url, timeout=10)
+        resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=15.0)
         if resp.status_code == 200:
             mime = resp.headers.get("content-type", "image/jpeg")
             return resp.content, mime

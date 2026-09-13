@@ -2,10 +2,9 @@
 # dependencies = [
 #   "pycryptodome",
 #   "mutagen",
-#   "yandex-music",
 #   "httpx",
 #   "yt-dlp",
-#   "zvuk-music",
+#   "ytmusicapi",
 # ]
 # ///
 
@@ -20,26 +19,27 @@ def main():
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="Multi-source FLAC/MP3 Music Downloader")
-    parser.add_argument("url", nargs="?", help="URL of the track to download (Spotify, Apple Music, Deezer, etc.)")
-    parser.add_argument("-q", "--quality", choices=["FLAC", "MP3"], default="FLAC", help="Preferred download quality (default: FLAC)")
+    parser = argparse.ArgumentParser(description="Multi-source Music Downloader (YouTube Music / Deezer / Soulseek)")
+    parser.add_argument("url", nargs="?", help="URL of the track to download or search query")
+    parser.add_argument("-q", "--quality", choices=["MP3", "FLAC"], default="MP3", help="Preferred download quality (default: MP3 320kbps)")
     
     args = parser.parse_args()
     
     if not args.url:
         print("=== Multi-source Music Downloader ===")
-        print("Поддерживаемые источники: Spotify, Apple Music, Deezer, Yandex, Zvuk, YouTube, SoundCloud и др.\n")
+        print("Основной источник: YouTube Music (умный подбор MP3 320kbps) + Deezer FLAC + Soulseek.")
+        print("Поддерживаемые ссылки: Spotify, Apple Music, Deezer, YouTube Music, SoundCloud, Яндекс.Музыка и текстовые запросы.\n")
         
-        args.url = input("Введите ссылку на трек: ").strip()
+        args.url = input("Введите ссылку на трек или название: ").strip()
         if not args.url:
-            print("[!] Ссылка не может быть пустой.")
+            print("[!] Ссылка или запрос не могут быть пустыми.")
             sys.exit(1)
             
-        choice = input("Предпочитаемое качество (1 - FLAC (рекомендуется), 2 - MP3 320kbps) [1]: ").strip()
+        choice = input("Предпочитаемое качество (1 - MP3 320kbps (рекомендуется), 2 - FLAC (Deezer / Soulseek)) [1]: ").strip()
         if choice == "2":
-            args.quality = "MP3"
-        else:
             args.quality = "FLAC"
+        else:
+            args.quality = "MP3"
             
     try:
         file_path = download_track_by_link(args.url, args.quality)

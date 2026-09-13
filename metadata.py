@@ -6,92 +6,232 @@ import config
 
 USER_AGENT = "MusicDownloader/1.0 (akate@gmail.com)"
 
+def resolve_spotify_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные трека напрямую со страницы Spotify."""
+    try:
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        if r.status_code != 200:
+            return None
+        title_m = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
+        desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', r.text)
+        image_m = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
+        
+        title = title_m.group(1) if title_m else ""
+        desc = desc_m.group(1) if desc_m else ""
+        art = image_m.group(1) if image_m else ""
+        
+        parts = [p.strip() for p in desc.split("·")]
+        artist = parts[0] if parts else ""
+        album = parts[1] if len(parts) > 2 else ""
+        year = parts[-1] if len(parts) > 1 and parts[-1].isdigit() else None
+        
+        if title and artist:
+            return {
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "year": year,
+                "album_art": art,
+                "spotify_url": str(r.url)
+            }
+    except Exception as e:
+        print(f"[!] Ошибка разбора ссылки Spotify: {e}")
+    return None
+
+def resolve_apple_music_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные трека напрямую из Apple Music / iTunes."""
+    try:
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        final_url = str(r.url)
+        m = re.search(r"[?&]i=(\d+)", final_url)
+        track_id = m.group(1) if m else None
+        if not track_id:
+            m2 = re.search(r"/album/[^/]+/(\d+)", final_url)
+            track_id = m2.group(1) if m2 else None
+        if track_id:
+            lookup = httpx.get(f"https://itunes.apple.com/lookup?id={track_id}", timeout=10)
+            if lookup.status_code == 200:
+                res = lookup.json().get("results", [])
+                if res:
+                    item = res[0]
+                    art = item.get("artworkUrl100", "").replace("100x100bb.jpg", "1000x1000bb.jpg")
+                    return {
+                        "title": item.get("trackName") or item.get("collectionName"),
+                        "artist": item.get("artistName"),
+                        "album": item.get("collectionName"),
+                        "year": (item.get("releaseDate") or "")[:4],
+                        "album_art": art,
+                        "track_number": item.get("trackNumber"),
+                        "track_total": item.get("trackCount"),
+                        "duration": (item.get("trackTimeMillis", 0) / 1000.0) if item.get("trackTimeMillis") else None
+                    }
+    except Exception as e:
+        print(f"[!] Ошибка разбора ссылки Apple Music: {e}")
+    return None
+
+def resolve_deezer_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные напрямую из Deezer API."""
+    try:
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=8)
+        m = re.search(r"track/(\d+)", str(r.url))
+        if m:
+            track_id = m.group(1)
+            meta = httpx.get(f"https://api.deezer.com/track/{track_id}", timeout=8).json()
+            if "error" not in meta:
+                album = meta.get("album", {})
+                return {
+                    "title": meta.get("title"),
+                    "artist": meta.get("artist", {}).get("name"),
+                    "album": album.get("title"),
+                    "year": (meta.get("release_date") or "")[:4],
+                    "album_art": album.get("cover_xl") or album.get("cover_big"),
+                    "track_number": meta.get("track_position"),
+                    "duration": meta.get("duration"),
+                    "isrc": meta.get("isrc"),
+                    "deezer_id": track_id
+                }
+    except Exception:
+        pass
+    return None
+
+def resolve_yandex_music_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные трека со страницы Яндекс.Музыки."""
+    try:
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        title_m = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
+        art_m = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
+        musician_m = re.search(r'<meta name="music:musician_description" content="([^"]+)"', r.text)
+        title = title_m.group(1) if title_m else ""
+        artist = musician_m.group(1) if musician_m else ""
+        art = art_m.group(1) if art_m else ""
+        if " — " in title and not artist:
+            parts = title.split(" — ", 1)
+            title = parts[0].strip()
+            artist = parts[1].strip()
+        if title:
+            return {
+                "title": title,
+                "artist": artist,
+                "album_art": art
+            }
+    except Exception as e:
+        print(f"[!] Ошибка разбора ссылки Яндекс Музыки: {e}")
+    return None
+
+def resolve_direct_streaming_link(url: str) -> Optional[dict]:
+    """Разрешает метаданные напрямую из ссылки на стриминговый сервис."""
+    url_lower = url.lower()
+    if "spotify.com" in url_lower:
+        print("[*] Прямой опрос Spotify для получения метаданных...")
+        res = resolve_spotify_track(url)
+        if res: return res
+    elif "apple.com" in url_lower:
+        print("[*] Прямой опрос Apple Music для получения метаданных...")
+        res = resolve_apple_music_track(url)
+        if res: return res
+    elif "deezer.com" in url_lower or "deezer.page.link" in url_lower:
+        print("[*] Прямой опрос Deezer для получения метаданных...")
+        res = resolve_deezer_track(url)
+        if res: return res
+    elif "music.yandex" in url_lower or "yandex.ru/album" in url_lower:
+        print("[*] Прямой опрос Яндекс Музыки для получения метаданных...")
+        res = resolve_yandex_music_track(url)
+        if res: return res
+    return None
+
 def resolve_song_link(url: str) -> Optional[dict]:
     """
-    Запрашивает song.link (Odesli) API и возвращает связи и базовые метаданные.
+    Запрашивает song.link (Odesli) и извлекает связи между платформами и метаданные.
+    Использует веб-скрейпинг Next.js payload (__NEXT_DATA__), что не требует API-ключей.
     """
-    encoded_url = urllib.parse.quote(url)
-    api_url = f"https://api.song.link/v1-alpha.1/links?url={encoded_url}"
-    
     try:
-        resp = httpx.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=15)
-        if resp.status_code != 200:
-            print(f"[!] Ошибка song.link: {resp.status_code}")
-            return None
-        
-        data = resp.json()
-        entities = data.get("entitiesByUniqueId", {})
-        if not entities:
-            return None
-        
-        # Берем первый попавшийся трек для базовых метаданных
-        first_entity = next(iter(entities.values()))
-        result = {
-            "title": first_entity.get("title", ""),
-            "artist": first_entity.get("artistName", ""),
-            "album_art": first_entity.get("thumbnailUrl", ""),
-            "deezer_id": None,
-            "yandex_id": None,
-            "tidal_id": None,
-            "youtube_music_url": None,
-            "soundcloud_url": None,
-            "spotify_url": None,
-            "isrc": None,
+        # 1. Сначала пробуем парсинг через веб-интерфейс song.link (не требует API ключа)
+        songlink_url = f"https://song.link/{url}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        
-        # Ищем платформенные идентификаторы и ссылки
-        for entity_id, entity in entities.items():
-            provider = entity.get("apiProvider")
-            entity_type = entity.get("type")
-            if entity_type != "song":
-                continue
-            
-            if provider == "deezer":
-                result["deezer_id"] = entity.get("id")
-            elif provider == "yandex":
-                result["yandex_id"] = entity.get("id")
-            elif provider == "tidal":
-                result["tidal_id"] = entity.get("id")
-                
-        # Извлекаем ссылки по платформам
-        links = data.get("linksByPlatform", {})
-        if "deezer" in links:
-            # Если нет в entities, вытаскиваем из ссылки
-            dz_url = links["deezer"].get("url", "")
-            if dz_url and not result["deezer_id"]:
-                match = re.search(r"track/(\d+)", dz_url)
-                if match:
-                    result["deezer_id"] = match.group(1)
+        resp = httpx.get(songlink_url, headers=headers, follow_redirects=True, timeout=10)
+        if resp.status_code == 200:
+            m = re.search(r'<script id="__NEXT_DATA__" type="application/json">({.*?})</script>', resp.text)
+            if m:
+                import json
+                data = json.loads(m.group(1))
+                page_data = data.get("props", {}).get("pageProps", {}).get("pageData", {})
+                entity = page_data.get("entityData", {})
+                if entity:
+                    release_date = entity.get("releaseDate", {})
+                    year = str(release_date.get("year")) if isinstance(release_date, dict) and release_date.get("year") else None
                     
-        if "tidal" in links:
-            td_url = links["tidal"].get("url", "")
-            if td_url and not result["tidal_id"]:
-                match = re.search(r"track/(\d+)", td_url)
-                if match:
-                    result["tidal_id"] = match.group(1)
+                    duration_ms = entity.get("duration")
+                    duration_s = duration_ms / 1000.0 if duration_ms else None
                     
-        if "yandex" in links:
-            ya_url = links["yandex"].get("url", "")
-            if ya_url and not result["yandex_id"]:
-                match = re.search(r"track/(\d+)", ya_url)
-                if match:
-                    result["yandex_id"] = match.group(1)
+                    result = {
+                        "title": entity.get("title", ""),
+                        "artist": entity.get("artistName", ""),
+                        "album_art": entity.get("thumbnailUrl", ""),
+                        "year": year,
+                        "isrc": entity.get("isrc"),
+                        "duration": duration_s,
+                        "track_number": entity.get("trackNumber"),
+                        "deezer_id": None,
+                        "spotify_url": None,
+                        "youtube_music_url": None,
+                        "apple_music_url": None,
+                    }
                     
-        if "youtubeMusic" in links:
-            result["youtube_music_url"] = links["youtubeMusic"].get("url")
-        elif "youtube" in links:
-            result["youtube_music_url"] = links["youtube"].get("url")
-            
-        if "soundcloud" in links:
-            result["soundcloud_url"] = links["soundcloud"].get("url")
-            
-        if "spotify" in links:
-            result["spotify_url"] = links["spotify"].get("url")
-            
-        return result
-        
+                    for sec in page_data.get("sections", []):
+                        links = sec.get("links") or sec.get("items") or []
+                        for l in links:
+                            plat = l.get("platform")
+                            item_url = l.get("url")
+                            uniq = l.get("uniqueId", "")
+                            if plat == "deezer" or "deezer" in uniq:
+                                m_dz = re.search(r"track/(\d+)", item_url or uniq)
+                                if m_dz:
+                                    result["deezer_id"] = m_dz.group(1)
+                            elif plat == "spotify":
+                                result["spotify_url"] = item_url
+                            elif plat in ("youtubeMusic", "youtube"):
+                                if not result["youtube_music_url"]:
+                                    result["youtube_music_url"] = item_url
+                            elif plat == "appleMusic":
+                                result["apple_music_url"] = item_url
+                                
+                    if result.get("title") and result.get("artist"):
+                        return result
     except Exception as e:
-        print(f"[!] Не удалось разрешить ссылку через song.link: {e}")
+        pass
+
+    # 2. Фолбек на api.song.link (если в будущем снова откроют или при наличии ключа)
+    try:
+        encoded_url = urllib.parse.quote(url)
+        api_url = f"https://api.song.link/v1-alpha.1/links?url={encoded_url}"
+        resp = httpx.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            entities = data.get("entitiesByUniqueId", {})
+            if entities:
+                first_entity = next(iter(entities.values()))
+                result = {
+                    "title": first_entity.get("title", ""),
+                    "artist": first_entity.get("artistName", ""),
+                    "album_art": first_entity.get("thumbnailUrl", ""),
+                    "deezer_id": None,
+                    "yandex_id": None,
+                    "tidal_id": None,
+                    "youtube_music_url": None,
+                    "soundcloud_url": None,
+                    "spotify_url": None,
+                    "isrc": None,
+                }
+                for entity_id, entity in entities.items():
+                    provider = entity.get("apiProvider")
+                    if entity.get("type") == "song" and provider == "deezer":
+                        result["deezer_id"] = entity.get("id")
+                return result
+    except Exception:
+        pass
+        
     return None
 
 def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
@@ -102,7 +242,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
         return None
     url = f"https://api.deezer.com/track/{deezer_id}"
     try:
-        resp = httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=10)
+        resp = httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
         if resp.status_code == 200:
             data = resp.json()
             if "error" in data:
@@ -333,9 +473,38 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         print(f"[!] Ошибка текстового поиска в MusicBrainz: {e}")
     return None
 
+def score_text_candidate(cand_title: str, cand_artist: str, target_query: str) -> float:
+    """
+    Оценивает совпадение кандидата с целевым запросом по токенам и штрафует
+    за лишние маркеры версий (ремиксы, каверы, караоке, лайвы).
+    """
+    from sources.youtube_matcher import toks, _version_markers
+    q_toks = toks(target_query)
+    c_toks = toks(f"{cand_artist} {cand_title}")
+    if not q_toks:
+        return 0.0
+        
+    overlap = len(q_toks & c_toks) / len(q_toks)
+    
+    q_vm = _version_markers(target_query)
+    c_vm = _version_markers(cand_title)
+    extra_vm = c_vm - q_vm
+    
+    score = overlap
+    CRITICAL_MARKERS = {"remix", "cover", "karaoke", "instrumental", "tribute", "parody", "live"}
+    if extra_vm & CRITICAL_MARKERS:
+        score -= 0.6 * len(extra_vm & CRITICAL_MARKERS)
+    elif extra_vm:
+        score -= 0.3 * len(extra_vm)
+        
+    extra_words = len(c_toks - q_toks)
+    score -= 0.02 * min(extra_words, 10)
+    
+    return max(0.0, score)
+
 def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> Optional[dict]:
     """
-    Получает метаданные трека из iTunes Search/Lookup API.
+    Получает метаданные трека из iTunes Search/Lookup API с валидацией кандидатов.
     """
     params = {}
     if isrc:
@@ -344,34 +513,50 @@ def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> 
     else:
         url = "https://itunes.apple.com/search"
         params = {
-            "term": f"{artist} {title}",
+            "term": f"{artist} {title}".strip(),
             "media": "music",
             "entity": "musicTrack",
-            "limit": 1
+            "limit": 5
         }
     try:
-        r = httpx.get(url, params=params, timeout=10)
+        r = httpx.get(url, params=params, timeout=6)
         if r.status_code == 200:
             data = r.json()
             results = data.get("results", [])
-            if results:
-                track = results[0]
-                art_url = track.get("artworkUrl100", "")
+            if not results:
+                return None
+                
+            best_track = None
+            if isrc:
+                best_track = results[0]
+            else:
+                target_query = f"{artist} {title}"
+                best_score = -1.0
+                for track in results:
+                    s = score_text_candidate(track.get("trackName", ""), track.get("artistName", ""), target_query)
+                    if s > best_score:
+                        best_score = s
+                        best_track = track
+                if best_score < 0.5:
+                    best_track = None
+                    
+            if best_track:
+                art_url = best_track.get("artworkUrl100", "")
                 if art_url:
                     # Извлекаем картинку в высоком разрешении
                     art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
                 
-                release_date = track.get("releaseDate", "")
+                release_date = best_track.get("releaseDate", "")
                 year = release_date[:4] if release_date else None
                 
                 return {
-                    "title": track.get("trackName"),
-                    "artist": track.get("artistName"),
-                    "album": track.get("collectionName"),
+                    "title": best_track.get("trackName"),
+                    "artist": best_track.get("artistName"),
+                    "album": best_track.get("collectionName"),
                     "year": year,
-                    "track_number": track.get("trackNumber"),
-                    "track_total": track.get("trackCount"),
-                    "album_artist": track.get("artistName"),
+                    "track_number": best_track.get("trackNumber"),
+                    "track_total": best_track.get("trackCount"),
+                    "album_artist": best_track.get("artistName"),
                     "album_art": art_url,
                 }
     except Exception as e:
@@ -473,6 +658,14 @@ def get_track_metadata(url: str) -> dict:
     """
     print(f"[*] Разрешение метаданных для: {url}")
     info = resolve_song_link(url)
+    direct_info = resolve_direct_streaming_link(url)
+    if direct_info:
+        if not info:
+            info = direct_info
+        else:
+            for k, v in direct_info.items():
+                if v and not info.get(k):
+                    info[k] = v
     if not info:
         return {"title": "Unknown Track", "artist": "Unknown Artist", "spotify_url": url if "spotify" in url else None}
         
@@ -550,48 +743,157 @@ def get_track_metadata(url: str) -> dict:
 
 def resolve_query_metadata(query: str) -> Optional[dict]:
     """
-    Разрешает поисковый запрос (например, 'Artist - Title') в структурированные метаданные через iTunes API.
+    Разрешает поисковый запрос (например, 'Artist - Title') в структурированные метаданные.
+    Приоритет: YouTube Music -> iTunes (с валидацией версий) -> Deezer -> Last.fm.
     """
-    print(f"[*] Поиск трека в каталоге iTunes: '{query}'")
+    print(f"[*] Поиск трека в каталоге YouTube Music: '{query}'")
+    
+    best_track: Optional[dict] = None
+    best_score = -1.0
+    
+    # 1. Поиск через YouTube Music (наиболее полный и нецензурированный каталог)
+    try:
+        from ytmusicapi import YTMusic
+        yt = YTMusic()
+        yt_results = yt.search(query, filter="songs", limit=10)
+        for cand in yt_results:
+            cand_title = cand.get("title", "")
+            artists = ", ".join(a.get("name", "") for a in cand.get("artists", []))
+            s = score_text_candidate(cand_title, artists, query)
+            if s > best_score:
+                best_score = s
+                
+                # Извлекаем качественную обложку
+                art_url = None
+                thumbs = cand.get("thumbnails", [])
+                if thumbs:
+                    raw_art = thumbs[-1].get("url", "")
+                    art_url = re.sub(r"=w\d+-h\d+.*", "=w1000-h1000-l90-rj", raw_art)
+                    if "=w1000-h1000" not in art_url and "=s" not in art_url:
+                        art_url = raw_art
+                        
+                best_track = {
+                    "title": cand_title,
+                    "artist": artists,
+                    "album": cand.get("album", {}).get("name") if cand.get("album") else None,
+                    "album_id": cand.get("album", {}).get("id") if cand.get("album") else None,
+                    "duration": cand.get("duration_seconds"),
+                    "youtube_music_url": f"https://music.youtube.com/watch?v={cand.get('videoId')}",
+                    "youtube_video_id": cand.get("videoId"),
+                    "album_art": art_url,
+                    "album_artist": artists,
+                    "query": query,
+                }
+    except Exception as e:
+        print(f"[!] YouTube Music: Ошибка поиска: {e}")
+        
+    # Если найден уверенный результат в YTMusic (score >= 0.5)
+    if best_track and best_score >= 0.5:
+        # Пытаемся получить год и номер трека из альбома YTMusic
+        if best_track.get("album_id") and not best_track.get("year"):
+            try:
+                album_data = yt.get_album(best_track["album_id"])
+                if album_data:
+                    best_track["year"] = album_data.get("year")
+                    best_track["track_total"] = album_data.get("trackCount")
+                    for idx, tr in enumerate(album_data.get("tracks", []), 1):
+                        if tr.get("videoId") == best_track.get("youtube_video_id"):
+                            best_track["track_number"] = idx
+                            break
+            except Exception:
+                pass
+                
+        # 2. Дополняем метаданными из iTunes (1000x1000 арт, точный год, номер трека)
+        itunes_meta = fetch_itunes_metadata(artist=best_track["artist"], title=best_track["title"])
+        if itunes_meta:
+            if itunes_meta.get("album_art"):
+                best_track["album_art"] = itunes_meta["album_art"]
+            if itunes_meta.get("year") and not best_track.get("year"):
+                best_track["year"] = itunes_meta["year"]
+            if itunes_meta.get("track_number") and not best_track.get("track_number"):
+                best_track["track_number"] = itunes_meta["track_number"]
+                best_track["track_total"] = itunes_meta.get("track_total")
+            if itunes_meta.get("album") and not best_track.get("album"):
+                best_track["album"] = itunes_meta["album"]
+                
+        # 3. Дополняем Deezer ID и метаданными
+        try:
+            from sources.deezer import search_deezer_track
+            dz_id = search_deezer_track(best_track["artist"], best_track["title"])
+            if dz_id:
+                best_track["deezer_id"] = dz_id
+                dz_meta = fetch_deezer_metadata(dz_id)
+                if dz_meta:
+                    if dz_meta.get("album_art") and not best_track.get("album_art"):
+                        best_track["album_art"] = dz_meta["album_art"]
+                    if dz_meta.get("year") and not best_track.get("year"):
+                        best_track["year"] = dz_meta["year"]
+                    if dz_meta.get("isrc") and not best_track.get("isrc"):
+                        best_track["isrc"] = dz_meta["isrc"]
+                    if dz_meta.get("track_number") and not best_track.get("track_number"):
+                        best_track["track_number"] = dz_meta["track_number"]
+                        best_track["track_total"] = dz_meta.get("track_total")
+        except Exception:
+            pass
+            
+        # 4. Жанры из Last.fm
+        try:
+            genres = fetch_lastfm_genres(best_track["artist"], best_track["title"])
+            if genres:
+                best_track["genre"] = genres
+        except Exception:
+            pass
+            
+        return best_track
+
+    # Фолбек на iTunes, если YTMusic ничего не дал
+    print(f"[*] Фолбек: Поиск трека в каталоге iTunes: '{query}'")
     params = {
         "term": query,
         "media": "music",
         "entity": "musicTrack",
-        "limit": 1
+        "limit": 10
     }
     try:
-        r = httpx.get("https://itunes.apple.com/search", params=params, timeout=10)
+        r = httpx.get("https://itunes.apple.com/search", params=params, timeout=6)
         if r.status_code == 200:
             results = r.json().get("results", [])
             if results:
-                track = results[0]
-                art_url = track.get("artworkUrl100", "")
-                if art_url:
-                    art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
-                
-                release_date = track.get("releaseDate", "")
-                year = release_date[:4] if release_date else None
-                
-                info = {
-                    "title": track.get("trackName"),
-                    "artist": track.get("artistName"),
-                    "album": track.get("collectionName"),
-                    "year": year,
-                    "track_number": track.get("trackNumber"),
-                    "track_total": track.get("trackCount"),
-                    "album_artist": track.get("artistName"),
-                    "album_art": art_url,
-                    "query": query
-                }
-                
-                # Получаем жанры из Last.fm
-                print("[*] Получение жанров из Last.fm...")
-                genres = fetch_lastfm_genres(info["artist"], info["title"])
-                if genres:
-                    info["genre"] = genres
-                    print(f"[+] Получены жанры: {genres}")
+                best_itunes = None
+                best_itunes_score = -1.0
+                for track in results:
+                    s = score_text_candidate(track.get("trackName", ""), track.get("artistName", ""), query)
+                    if s > best_itunes_score:
+                        best_itunes_score = s
+                        best_itunes = track
+                        
+                if best_itunes and best_itunes_score >= 0.4:
+                    art_url = best_itunes.get("artworkUrl100", "")
+                    if art_url:
+                        art_url = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
                     
-                return info
+                    release_date = best_itunes.get("releaseDate", "")
+                    year = release_date[:4] if release_date else None
+                    
+                    info = {
+                        "title": best_itunes.get("trackName"),
+                        "artist": best_itunes.get("artistName"),
+                        "album": best_itunes.get("collectionName"),
+                        "year": year,
+                        "track_number": best_itunes.get("trackNumber"),
+                        "track_total": best_itunes.get("trackCount"),
+                        "album_artist": best_itunes.get("artistName"),
+                        "album_art": art_url,
+                        "query": query
+                    }
+                    try:
+                        genres = fetch_lastfm_genres(info["artist"], info["title"])
+                        if genres:
+                            info["genre"] = genres
+                    except Exception:
+                        pass
+                    return info
     except Exception as e:
         print(f"[!] iTunes: Ошибка поиска по запросу: {e}")
+        
     return None

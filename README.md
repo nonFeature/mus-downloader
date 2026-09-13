@@ -9,14 +9,13 @@ A multi-source, high-quality music downloader written in Python. It supports dow
 ## Features
 
 - **Multi-Source Fallback Chain**: 
-  1. **Monochrome**: Resolves tracks via Qobuz proxies (using ISRC or text query search) and Tidal hifi-api (using Tidal ID). Supports Qobuz and Tidal lossless streaming (up to Hi-Res 24-bit).
-  2. **Deezer**: Streams and decrypts lossless streams using Echo API Proxy.
-  3. **Yandex Music**: Downloads tracks via `yandex-music` API (FLAC & MP3 320kbps).
-  4. **Zvuk (Sber Zvuk)**: Downloads tracks via `zvuk-music` library (FLAC & MP3).
-  5. **Soulseek**: Searches peer-to-peer sharing network using `slskd` API for rare and high-quality tracks.
-  6. **Fallback**: SoundCloud and YouTube Music using `yt-dlp` (filtering low quality, encoding to 320kbps MP3 via FFmpeg).
-- **Metadata Resolving**: Accepts any song link (Spotify, Apple Music, Deezer, YouTube Music, etc.). Resolves it via the song.link API, fetches clean ISRC codes, and queries MusicBrainz to fetch accurate album metadata and original release dates (skipping compilations/live editions).
-- **Metadata Tagging**: Automatically writes complete metadata tags (Title, Artist, Album, Year, Track number) and embeds high-resolution cover art into FLAC, MP3, and M4A files using `mutagen`.
+  1. **YouTube Music (CSVMusic Matching Engine)**: Primary source for authentic MP3 320 kbps (LAME CBR). Strict candidate scoring, duration verification within ±10%, filtering out covers, remixes, live performances, and nightcore.
+  2. **Deezer**: Authentic lossless FLAC stream extraction and high-speed MP3 320 kbps via on-the-fly Blowfish decryption.
+  3. **Soulseek**: Peer-to-peer search via `slskd` daemon for FLAC Lossless and MP3 320 kbps fallback.
+  4. **Direct Stream Fallback**: Direct stream extraction via `yt-dlp` for edge cases.
+- **Zero-Key Core**: Downloading tracks requires 0 API keys. Optional keys are strictly for extra metadata enrichment (Last.fm, Discogs).
+- **Metadata Resolving**: Accepts any song link (Spotify, Apple Music, Deezer, YouTube Music, etc.) or text query. Resolves cross-platform links via song.link, fetches clean ISRC codes, and queries MusicBrainz / iTunes / Last.fm to fetch accurate metadata and high-res cover art.
+- **Metadata Tagging**: Automatically writes complete metadata tags (Title, Artist, Album, Year, Track number, Genre) and embeds high-resolution cover art into FLAC and MP3 files using `mutagen`.
 
 ---
 
@@ -42,12 +41,9 @@ cp .env.example .env
 ```
 
 Available variables:
-- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Connection and download parameters for your `slskd` instance (Soulseek daemon).
-- `YANDEX_TOKEN`: Access token for Yandex Music API.
-- `ZVUK_TOKEN`: Authentication token for Zvuk API.
-- `MONOCHROME_AMAZON_API_URL`: Custom Amazon Music proxy API URL (default: `https://amz.geeked.wtf`).
-- `MONOCHROME_AMAZON_JWT`: Cloudflare Turnstile JWT for Amazon Music authentication (valid for 1 hour).
-- `MONOCHROME_AMAZON_BYPASS_TOKEN`: Optional bypass token for Amazon Music.
+- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Connection and download parameters for your `slskd` instance (Soulseek daemon, optional).
+- `LASTFM_API_KEY`: Custom Last.fm API key for genres and tags (optional, built-in key used by default).
+- `DISCOGS_TOKEN`: Optional personal access token for Discogs database lookup.
 - `DOWNLOAD_DIR`: Path to save downloaded tracks (default: `downloads`).
 
 ### Soulseek (slskd) Docker Setup
@@ -118,14 +114,13 @@ uv run main.py "MGMT - Kids"
 ## Возможности
 
 - **Интеллектуальная цепочка источников**:
-  1. **Monochrome**: Поиск по ISRC и тексту на прокси Qobuz и скачивание потоков через Tidal hifi-api (поддержка Hi-Res 24-бит и CD FLAC).
-  2. **Deezer**: Скачивание и расшифровка оригинального потока с использованием прокси Echo API.
-  3. **Яндекс Музыка**: Скачивание через официальное API (FLAC и MP3 320кбит/с).
-  4. **Сбер Звук**: Скачивание через библиотеку `zvuk-music` (FLAC и MP3).
-  5. **Soulseek**: Поиск редких записей и FLAC-файлов в P2P-сети через API демона `slskd`.
-  6. **Резервный фолбек**: SoundCloud и YouTube Music через `yt-dlp` (с фильтрацией низкого битрейта и перекодированием в MP3 320kbps через FFmpeg).
-- **Разрешение метаданных**: Принимает ссылки любых музыкальных сервисов (Spotify, Apple Music, Deezer, YouTube Music и др.). Определяет ISRC с помощью song.link API и извлекает чистые альбомные метаданные из базы MusicBrainz (игнорирует плейлисты, синглы и сборники).
-- **Автоматическое теггирование**: Записывает теги (название, артист, альбом, год, номер трека) и вшивает обложки высокого разрешения в результирующие FLAC, MP3 и M4A файлы с помощью библиотеки `mutagen`.
+  1. **YouTube Music (алгоритм CSVMusic)**: Основной источник для MP3 320 kbps (LAME CBR). Строгая проверка хронометража (±10%), токенизация, отсев каверов, ремиксов, лайвов и nightcore.
+  2. **Deezer**: Скачивание и расшифровка оригинального FLAC Lossless потока и MP3 320 kbps на лету с использованием Blowfish.
+  3. **Soulseek**: Поиск FLAC Lossless и MP3 320kbps в P2P-сети через API демона `slskd`.
+  4. **Прямой фолбек**: Прямое скачивание потока через `yt-dlp`.
+- **Полная независимость от обязательных API-ключей**: Скачивание работает сразу "из коробки" без каких-либо платных ключей или токенов. Опциональные ключи используются исключительно для расширенных баз метаданных (Last.fm, Discogs).
+- **Разрешение метаданных**: Принимает ссылки любых музыкальных сервисов (Spotify, Apple Music, Deezer, YouTube Music и др.) или текстовые поисковые запросы. Определяет ISRC с помощью song.link и извлекает чистые альбомные метаданные из баз MusicBrainz / iTunes / Last.fm (игнорирует нежелательные ремиксы и сборники).
+- **Автоматическое теггирование**: Записывает теги (название, артист, альбом, год, номер трека, жанр) и вшивает обложки высокого разрешения (до 1000x1000) в результирующие FLAC и MP3 файлы с помощью библиотеки `mutagen`.
 
 ---
 
@@ -145,18 +140,15 @@ uv run main.py "MGMT - Kids"
 
 ## Настройка
 
-Скопируйте файл `.env.example` в `.env` и укажите необходимые токены:
+Скопируйте файл `.env.example` в `.env` и при необходимости укажите настройки:
 ```bash
 cp .env.example .env
 ```
 
 Основные переменные:
-- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Параметры подключения и папка загрузок вашего инстанса `slskd` (демона Soulseek).
-- `YANDEX_TOKEN`: Токен доступа Яндекс Музыки.
-- `ZVUK_TOKEN`: Авторизационный токен Сбер Звука.
-- `MONOCHROME_AMAZON_API_URL`: URL прокси-сервера Amazon Music (по умолчанию: `https://amz.geeked.wtf`).
-- `MONOCHROME_AMAZON_JWT`: Временный JWT-токен Cloudflare Turnstile для Amazon Music (действует 1 час).
-- `MONOCHROME_AMAZON_BYPASS_TOKEN`: Опциональный токен обхода капчи для Amazon Music.
+- `SLSKD_URL` / `SLSKD_USER` / `SLSKD_PASS` / `SLSKD_DOWNLOADS_PATH`: Параметры подключения и папка загрузок вашего инстанса `slskd` (демона Soulseek, опционально).
+- `LASTFM_API_KEY`: Пользовательский ключ Last.fm для тегов/жанров (опционально, встроен дефолтный ключ).
+- `DISCOGS_TOKEN`: Опциональный токен Discogs для расширенного поиска метаданных.
 - `DOWNLOAD_DIR`: Директория для сохранения скачанной музыки (по умолчанию: `downloads`).
 
 ### Настройка Soulseek (slskd) через Docker Compose
