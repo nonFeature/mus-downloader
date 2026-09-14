@@ -1,3 +1,4 @@
+import html
 import httpx
 import re
 import urllib.parse
@@ -16,13 +17,13 @@ def resolve_spotify_track(url: str) -> Optional[dict]:
         desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', r.text)
         image_m = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
         
-        title = title_m.group(1) if title_m else ""
-        desc = desc_m.group(1) if desc_m else ""
+        title = html.unescape(title_m.group(1)) if title_m else ""
+        desc = html.unescape(desc_m.group(1)) if desc_m else ""
         art = image_m.group(1) if image_m else ""
         
         parts = [p.strip() for p in desc.split("·")]
-        artist = parts[0] if parts else ""
-        album = parts[1] if len(parts) > 2 else ""
+        artist = html.unescape(parts[0]) if parts else ""
+        album = html.unescape(parts[1]) if len(parts) > 2 else ""
         year = parts[-1] if len(parts) > 1 and parts[-1].isdigit() else None
         
         if title and artist:
@@ -118,8 +119,41 @@ def resolve_yandex_music_track(url: str) -> Optional[dict]:
         print(f"[!] Ошибка разбора ссылки Яндекс Музыки: {e}")
     return None
 
+def unshorten_url(url: str) -> str:
+    """Разворачивает сокращенные ссылки (on.soundcloud.com, spotify.link, deezer.page.link и т.д.)."""
+    short_domains = ["on.soundcloud.com", "spotify.link", "deezer.page.link", "t.co", "bit.ly", "tinyurl.com"]
+    if any(d in url.lower() for d in short_domains):
+        try:
+            with httpx.Client(follow_redirects=True, timeout=5) as client:
+                r = client.head(url)
+                return str(r.url)
+        except Exception:
+            pass
+    return url
+
+def resolve_soundcloud_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные трека из SoundCloud через публичный oEmbed."""
+    try:
+        r = httpx.get("https://soundcloud.com/oembed", params={"format": "json", "url": url}, timeout=6)
+        if r.status_code == 200:
+            data = r.json()
+            title = data.get("title", "")
+            author = data.get("author_name", "")
+            if " by " in title:
+                title = title.rsplit(" by ", 1)[0].strip()
+            return {
+                "title": title,
+                "artist": author,
+                "album_art": data.get("thumbnail_url"),
+                "soundcloud_url": url,
+            }
+    except Exception:
+        pass
+    return None
+
 def resolve_direct_streaming_link(url: str) -> Optional[dict]:
     """Разрешает метаданные напрямую из ссылки на стриминговый сервис."""
+    url = unshorten_url(url)
     url_lower = url.lower()
     if "spotify.com" in url_lower:
         print("[*] Прямой опрос Spotify для получения метаданных...")
@@ -137,20 +171,26 @@ def resolve_direct_streaming_link(url: str) -> Optional[dict]:
         print("[*] Прямой опрос Яндекс Музыки для получения метаданных...")
         res = resolve_yandex_music_track(url)
         if res: return res
+    elif "soundcloud.com" in url_lower:
+        print("[*] Прямой опрос SoundCloud для получения метаданных...")
+        res = resolve_soundcloud_track(url)
+        if res: return res
     return None
 
 def resolve_song_link(url: str) -> Optional[dict]:
     """
     Запрашивает song.link (Odesli) и извлекает связи между платформами и метаданные.
+    Поддерживает ссылки с Яндекс.Музыки, SoundCloud, Spotify, Apple Music, Deezer, Tidal, YouTube и др.
     Использует веб-скрейпинг Next.js payload (__NEXT_DATA__), что не требует API-ключей.
     """
+    url = unshorten_url(url)
     try:
         # 1. Сначала пробуем парсинг через веб-интерфейс song.link (не требует API ключа)
         songlink_url = f"https://song.link/{url}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        resp = httpx.get(songlink_url, headers=headers, follow_redirects=True, timeout=10)
+        resp = httpx.get(songlink_url, headers=headers, follow_redirects=True, timeout=12)
         if resp.status_code == 200:
             m = re.search(r'<script id="__NEXT_DATA__" type="application/json">({.*?})</script>', resp.text)
             if m:
@@ -160,7 +200,11 @@ def resolve_song_link(url: str) -> Optional[dict]:
                 entity = page_data.get("entityData", {})
                 if entity:
                     release_date = entity.get("releaseDate", {})
-                    year = str(release_date.get("year")) if isinstance(release_date, dict) and release_date.get("year") else None
+                    year = None
+                    if isinstance(release_date, dict) and release_date.get("year"):
+                        year = str(release_date.get("year"))
+                    elif isinstance(release_date, str) and len(release_date) >= 4:
+                        year = release_date[:4]
                     
                     duration_ms = entity.get("duration")
                     duration_s = duration_ms / 1000.0 if duration_ms else None
@@ -168,15 +212,19 @@ def resolve_song_link(url: str) -> Optional[dict]:
                     result = {
                         "title": entity.get("title", ""),
                         "artist": entity.get("artistName", ""),
+                        "album": entity.get("albumName") or entity.get("collectionName"),
                         "album_art": entity.get("thumbnailUrl", ""),
                         "year": year,
                         "isrc": entity.get("isrc"),
                         "duration": duration_s,
                         "track_number": entity.get("trackNumber"),
+                        "explicit": entity.get("explicitness") == "explicit",
                         "deezer_id": None,
                         "spotify_url": None,
                         "youtube_music_url": None,
                         "apple_music_url": None,
+                        "soundcloud_url": None,
+                        "yandex_url": None,
                     }
                     
                     for sec in page_data.get("sections", []):
@@ -185,6 +233,8 @@ def resolve_song_link(url: str) -> Optional[dict]:
                             plat = l.get("platform")
                             item_url = l.get("url")
                             uniq = l.get("uniqueId", "")
+                            if not item_url:
+                                continue
                             if plat == "deezer" or "deezer" in uniq:
                                 m_dz = re.search(r"track/(\d+)", item_url or uniq)
                                 if m_dz:
@@ -192,10 +242,35 @@ def resolve_song_link(url: str) -> Optional[dict]:
                             elif plat == "spotify":
                                 result["spotify_url"] = item_url
                             elif plat in ("youtubeMusic", "youtube"):
-                                if not result["youtube_music_url"]:
+                                if not result.get("youtube_music_url"):
                                     result["youtube_music_url"] = item_url
-                            elif plat == "appleMusic":
-                                result["apple_music_url"] = item_url
+                            elif plat in ("appleMusic", "itunes"):
+                                if not result.get("apple_music_url"):
+                                    result["apple_music_url"] = item_url
+                            elif plat == "soundcloud":
+                                result["soundcloud_url"] = item_url
+                            elif plat == "yandex":
+                                result["yandex_url"] = item_url
+
+                    # Также проверяем linksByPlatform (иногда ссылки есть только там)
+                    links_by_plat = page_data.get("linksByPlatform", {})
+                    for plat, p_info in links_by_plat.items():
+                        p_url = p_info.get("url") if isinstance(p_info, dict) else None
+                        if not p_url:
+                            continue
+                        if plat == "deezer" and not result.get("deezer_id"):
+                            m_dz = re.search(r"track/(\d+)", p_url)
+                            if m_dz: result["deezer_id"] = m_dz.group(1)
+                        elif plat == "spotify" and not result.get("spotify_url"):
+                            result["spotify_url"] = p_url
+                        elif plat in ("youtubeMusic", "youtube") and not result.get("youtube_music_url"):
+                            result["youtube_music_url"] = p_url
+                        elif plat in ("appleMusic", "itunes") and not result.get("apple_music_url"):
+                            result["apple_music_url"] = p_url
+                        elif plat == "soundcloud" and not result.get("soundcloud_url"):
+                            result["soundcloud_url"] = p_url
+                        elif plat == "yandex" and not result.get("yandex_url"):
+                            result["yandex_url"] = p_url
                                 
                     if result.get("title") and result.get("artist"):
                         return result
@@ -665,6 +740,16 @@ def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
         pass
     return None
 
+def sanitize_metadata_strings(meta: Optional[dict]) -> Optional[dict]:
+    """Декодирует HTML-сущности (например, &#x27; -> ') и очищает строки метаданных."""
+    if not meta or not isinstance(meta, dict):
+        return meta
+    for k in ("title", "artist", "album", "album_artist", "genre"):
+        v = meta.get(k)
+        if isinstance(v, str):
+            meta[k] = html.unescape(v).strip()
+    return meta
+
 def get_track_metadata(url: str) -> dict:
     """
     Полный цикл извлечения метаданных:
@@ -686,17 +771,36 @@ def get_track_metadata(url: str) -> dict:
     if not info:
         return {"title": "Unknown Track", "artist": "Unknown Artist", "spotify_url": url if "spotify" in url else None}
         
+    artist_query = info.get("artist") or ""
+    title_query = info.get("title") or ""
+    
+    # Если Deezer ID не найден через song.link, пробуем прямой поиск по артисту и названию
+    if not info.get("deezer_id") and artist_query and title_query:
+        try:
+            from sources.deezer import search_deezer_track
+            found_dz_id = search_deezer_track(artist_query, title_query)
+            if found_dz_id:
+                info["deezer_id"] = found_dz_id
+        except Exception:
+            pass
+
     dz_meta = None
     if info.get("deezer_id"):
         print("[*] Получение метаданных напрямую из Deezer API...")
         dz_meta = fetch_deezer_metadata(info["deezer_id"])
         
-    artist_query = info.get("artist") or ""
-    title_query = info.get("title") or ""
     isrc_query = info.get("isrc") or (dz_meta.get("isrc") if dz_meta else None)
     
     print("[*] Получение метаданных из iTunes API...")
     itunes_meta = fetch_itunes_metadata(artist=artist_query, title=title_query, isrc=isrc_query)
+    
+    # Если song.link не связал трек со стримингами (например, ссылка с Я.Музыки или SoundCloud),
+    # а в iTunes нашелся трек - пробуем отправить Apple Music URL в song.link для поиска Deezer/Spotify связей
+    if not info.get("deezer_id") and itunes_meta and itunes_meta.get("apple_music_url"):
+        apple_sl = resolve_song_link(itunes_meta["apple_music_url"])
+        if apple_sl and apple_sl.get("deezer_id"):
+            info["deezer_id"] = apple_sl["deezer_id"]
+            dz_meta = fetch_deezer_metadata(info["deezer_id"])
     
     discogs_meta = None
     if config.DISCOGS_TOKEN and artist_query and title_query:
@@ -750,7 +854,7 @@ def get_track_metadata(url: str) -> dict:
             info["genre"] = genres
             print(f"[+] Получены жанры: {genres}")
             
-    return info
+    return sanitize_metadata_strings(info)
 
 def resolve_query_metadata(query: str) -> Optional[dict]:
     """
@@ -938,4 +1042,4 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
     except Exception:
         pass
 
-    return meta
+    return sanitize_metadata_strings(meta)

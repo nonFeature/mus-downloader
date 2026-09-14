@@ -1,3 +1,4 @@
+import base64
 import httpx
 from pathlib import Path
 from mutagen.flac import FLAC, Picture
@@ -5,6 +6,7 @@ from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC
 from mutagen.mp4 import MP4, MP4Cover
+from mutagen.oggopus import OggOpus
 
 def download_cover_art(url: str) -> tuple[bytes | None, str | None]:
     """Скачивает обложку по URL и возвращает (bytes, mime_type)"""
@@ -169,6 +171,40 @@ def apply_metadata(
                 audio["covr"] = [MP4Cover(art_bytes, imageformat=cover_format)]
             audio.save()
             print(f"[+] Теги M4A записаны успешно.")
+
+        elif suffix in ['.opus', '.ogg']:
+            audio = OggOpus(str(file_path))
+            audio["ARTIST"] = artist
+            audio["TITLE"] = title
+            if album:
+                audio["ALBUM"] = album
+            if album_artist:
+                audio["ALBUMARTIST"] = album_artist
+            if compilation:
+                audio["COMPILATION"] = "1"
+            if year:
+                audio["DATE"] = year
+            if track_number:
+                audio["TRACKNUMBER"] = str(track_number)
+                if track_total:
+                    audio["TRACKTOTAL"] = str(track_total)
+            if source:
+                audio["SOURCE"] = source
+            if source_quality:
+                audio["SOURCE_QUALITY"] = source_quality
+            if genre:
+                audio["GENRE"] = genre
+            if has_art:
+                try:
+                    pic = Picture()
+                    pic.type = 3
+                    pic.mime = art_mime
+                    pic.data = art_bytes
+                    audio["METADATA_BLOCK_PICTURE"] = [base64.b64encode(pic.write()).decode("ascii")]
+                except Exception:
+                    pass
+            audio.save()
+            print(f"[+] Теги OPUS/OGG записаны успешно.")
             
         else:
             print(f"[!] Неподдерживаемый формат файла для теггирования: {suffix}")
