@@ -90,20 +90,20 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
                     fallback_sc_file = sc_candidate
         
         # Шаг FLAC-1: Soulseek (только FLAC, в первую очередь)
-        if not file_path and config.SLSKD_URL:
+        if not file_path and (config.SLSK_USER or config.SLSKD_URL):
             print("[*] Поиск FLAC на Soulseek...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
-            if candidates:
-                best = candidates[0]
+            for cand in candidates:
                 file_path = download_soulseek_track(
-                    best["slskd_username"],
-                    best["slskd_filename"],
-                    best["slskd_size"],
+                    cand["slskd_username"],
+                    cand["slskd_filename"],
+                    cand["slskd_size"],
                     config.DOWNLOAD_DIR,
                     target_quality="FLAC"
                 )
                 if file_path:
-                    source_used = f"Soulseek ({best['quality']})"
+                    source_used = f"Soulseek ({cand['quality']})"
+                    break
 
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
         if not file_path and deezer_id:
@@ -160,21 +160,21 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
             if file_path:
                 source_used = "Deezer (MP3 320)"
 
-        # Шаг MP3-2: Soulseek (slsk), если настроен slskd (честный 320k CBR / FLAC)
-        if not file_path and config.SLSKD_URL:
+        # Шаг MP3-2: Soulseek (честный 320k CBR / FLAC)
+        if not file_path and (config.SLSK_USER or config.SLSKD_URL):
             print("\n[*] Поиск MP3 на Soulseek...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
-            if candidates:
-                best = candidates[0]
+            for cand in candidates:
                 file_path = download_soulseek_track(
-                    best["slskd_username"],
-                    best["slskd_filename"],
-                    best["slskd_size"],
+                    cand["slskd_username"],
+                    cand["slskd_filename"],
+                    cand["slskd_size"],
                     config.DOWNLOAD_DIR,
                     target_quality="MP3"
                 )
                 if file_path:
-                    source_used = f"Soulseek ({best['quality']})"
+                    source_used = f"Soulseek ({cand['quality']})"
+                    break
 
         # Шаг MP3-3: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
         if not file_path:
