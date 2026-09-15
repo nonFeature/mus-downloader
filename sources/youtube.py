@@ -183,7 +183,7 @@ def download_youtube_track(
     # 1. Если передан прямой URL YouTube
     if direct_url and ("youtube.com" in direct_url or "youtu.be" in direct_url):
         target_url = direct_url
-        print(f"[*] YouTube: Использование прямой ссылки: {direct_url}")
+        print("[*] YouTube: прямая ссылка...")
         v_match = re.search(r"(?:v=|youtu\.be/|embed/|watch\?v=)([\w-]{11})", direct_url)
         if v_match:
             video_id = v_match.group(1)
@@ -191,7 +191,7 @@ def download_youtube_track(
             video_id = "direct"
     else:
         # 2. Умный поиск через YouTube Music (CSVMusic алгоритм)
-        print(f"[*] YouTube Music: Умный поиск трека '{artist} - {title}' (CSVMusic matcher)...")
+        print(f"[*] YouTube Music: поиск '{artist} - {title}'...")
         best_match, score, options = find_best_youtube_match(
             artist=artist,
             title=title,
@@ -203,14 +203,14 @@ def download_youtube_track(
 
         if not best_match:
             if options:
-                print(f"[!] YouTube Music: Лучший кандидат '{options[0]['title']}' имеет низкую оценку ({score:.2f} < 0.60). Отклонено.")
+                print(f"[!] YouTube Music: кандидат '{options[0]['title']}' отклонен ({score:.2f} < 0.60)")
             else:
-                print("[!] YouTube Music: Не найдено подходящих результатов.")
+                print("[!] YouTube Music: нет подходящих результатов")
             return None
 
         video_id = best_match["videoId"]
         target_url = f"https://music.youtube.com/watch?v={video_id}"
-        print(f"[+] YouTube Music: Выбран кандидат '{best_match['title']}' ({best_match['author']}) с уверенностью {score:.2f}")
+        print(f"[+] YouTube Music: выбран '{best_match['title']}' ({int(score*100)}%)")
 
     safe_artist = _clean_filename(artist or "Unknown Artist")
     safe_title = _clean_filename(title or "Unknown Track")
@@ -257,10 +257,7 @@ def download_youtube_track(
     # 4. Определение параметров потока и адаптивный выбор битрейта MP3
     codec, abr = _detect_audio_info(temp_downloaded, info)
     target_bitrate = _select_mp3_bitrate(codec, abr)
-    print(f"[*] YouTube: Исходный поток: кодек={codec or 'unknown'}, битрейт={abr or 'unknown'}kbps -> целевой MP3: {target_bitrate} (LAME CBR)")
-
-    # Транскодирование в MP3 через FFmpeg с адаптивным битрейтом
-    print(f"[*] YouTube: Конвертация потока в MP3 {target_bitrate} (LAME CBR)...")
+    print(f"[*] YouTube: конвертация {codec}/{abr or '?'}k -> MP3 {target_bitrate} CBR...")
     success = _transcode_to_mp3(temp_downloaded, final_path, bitrate=target_bitrate)
 
     # Очищаем временный файл
@@ -270,7 +267,7 @@ def download_youtube_track(
         pass
 
     if success and final_path.exists():
-        print(f"[+] YouTube: Скачивание и конвертация завершены: {final_path}")
+        print(f"[+] YouTube: готов {final_path.name}")
         return final_path
     else:
         print("[!] YouTube: Не удалось сконвертировать поток в MP3")

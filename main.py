@@ -45,15 +45,15 @@ def main():
     try:
         file_path = download_track_by_link(args.url, args.quality)
         if file_path:
-            print(f"\n[+] Идеально сохранено: {file_path.resolve()}")
+            print(f"[+] Сохранено: {file_path.resolve()}")
         else:
-            print("\n[-] Не удалось скачать трек.")
+            print("[-] Не удалось скачать трек.")
             sys.exit(1)
     except KeyboardInterrupt:
-        print("\n[!] Скачивание прервано пользователем.")
+        print("[!] Прервано.")
         sys.exit(0)
     except Exception as e:
-        print(f"\n[!] Возникла ошибка во время работы: {e}")
+        print(f"[!] Ошибка: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -67,7 +67,6 @@ def download_deezer_track(
         target_quality = "MP3_320"
         
     quality_info = QUALITIES[target_quality]
-    print(f"[*] Deezer: Запрос трека {track_id} ({target_quality})")
 
     try:
         # 1. Запрашиваем URL потока через прокси-сервер Echo
@@ -133,14 +132,14 @@ def download_deezer_track(
         output_path = dest_dir / output_filename
 
         # 2. Скачиваем зашифрованный поток и дешифруем его на лету
-        print(f"[*] Deezer: Скачивание и расшифровка потока ({actual_format})...")
+        print(f"[*] Deezer: скачивание {actual_format}...")
         bf_key = get_blowfish_key(track_id)
         
         with httpx.stream("GET", stream_url, headers=headers, timeout=30) as r:
             r.raise_for_status()
             decrypt_and_save(r.iter_bytes(chunk_size=4096), bf_key, output_path)
             
-        print(f"[+] Deezer: Скачивание завершено: {output_path}")
+        print(f"[+] Deezer: скачан {output_path.name}")
         return output_path
 
     except Exception as e:

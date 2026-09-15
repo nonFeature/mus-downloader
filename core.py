@@ -47,16 +47,10 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
     
     explicit = meta.get("explicit")
     
-    print(f"\n[*] Найдена информация о треке:")
-    print(f"    Исполнитель : {artist}")
-    print(f"    Название    : {title}")
-    print(f"    Альбом      : {album or 'N/A'}")
-    print(f"    Год         : {meta.get('year', 'N/A')}")
-    print(f"    ISRC        : {isrc or 'N/A'}")
-    print(f"    Explicit    : {'Да [E]' if explicit else 'Нет'}")
-    print(f"    Длительность: {round(duration, 1) if duration else 'N/A'} сек")
-    print(f"    Номер трека : {meta.get('track_number', 'N/A')}/{meta.get('track_total', 'N/A')}")
-    print(f"    Целевое качество: {target_quality}")
+    exp_str = " [E]" if explicit else ""
+    year_str = f" ({meta.get('year')})" if meta.get('year') else ""
+    dur_str = f" [{round(duration)}s]" if duration else ""
+    print(f"\n[*] Трек: {artist} - {title}{exp_str}{year_str}{dur_str} [{target_quality}]")
     
     file_path: Optional[Path] = None
     source_used: Optional[str] = None
@@ -68,11 +62,9 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
 
     # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
     if target_quality == "FLAC":
-        print("\n[*] Режим FLAC: поиск честного Lossless (Soulseek / Deezer)...")
-
         # Если дана прямая ссылка SoundCloud, проверяем наличие Lossless-оригинала (FLAC/WAV)
         if is_soundcloud:
-            print("[*] SoundCloud: Проверка наличия FLAC/Lossless оригинала...")
+            print("[*] SoundCloud: проверка Lossless оригинала...")
             sc_target = meta.get("soundcloud_url") or url_or_query
             sc_candidate = download_soundcloud_track(
                 url=sc_target,
@@ -91,11 +83,11 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
         
         # Шаг FLAC-1: Soulseek (только FLAC, в первую очередь)
         if not file_path and (config.SLSK_USER or config.SLSKD_URL):
-            print("[*] Поиск FLAC на Soulseek...")
+            print("[*] Soulseek: поиск FLAC...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
             for idx, cand in enumerate(candidates, 1):
                 if idx > 1:
-                    print(f"\n[*] Soulseek: Пробуем резервного кандидата #{idx} от {cand['slskd_username']}...")
+                    print(f"[*] Soulseek: резервный пир #{idx} ({cand['slskd_username']})...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
@@ -107,18 +99,16 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
                     source_used = f"Soulseek ({cand['quality']})"
                     break
             if not file_path and candidates:
-                print(f"[!] Soulseek: Ни один из {len(candidates)} кандидатов не смог отдать файл.")
+                print(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
         if not file_path and deezer_id:
-            print(f"[*] Проверка наличия FLAC в Deezer (ID: {deezer_id})...")
             file_path = download_deezer_track(deezer_id, config.DOWNLOAD_DIR, target_quality="FLAC", artist=artist, title=title)
             if file_path and file_path.suffix.lower() == ".flac":
                 source_used = "Deezer FLAC"
 
         if not file_path:
-            print("\n[!] Честный FLAC не найден ни в Soulseek, ни в Deezer.")
-            print("[*] Мягкое переключение на загрузку MP3...")
+            print("[!] FLAC не найден -> переключение на MP3...")
 
     # 3. Логика для MP3 / стандартных стримингов (основной режим или откат с FLAC)
     if not file_path:
@@ -159,18 +149,17 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
 
         # Шаг MP3-1: Deezer MP3 320 (честный студийный 320k CBR)
         if not file_path and deezer_id:
-            print(f"\n[*] Попытка скачивания MP3 320 с Deezer...")
             file_path = download_deezer_track(deezer_id, config.DOWNLOAD_DIR, target_quality="MP3_320", artist=artist, title=title)
             if file_path:
                 source_used = "Deezer (MP3 320)"
 
         # Шаг MP3-2: Soulseek (честный 320k CBR / FLAC)
         if not file_path and (config.SLSK_USER or config.SLSKD_URL):
-            print("\n[*] Поиск MP3 на Soulseek...")
+            print("[*] Soulseek: поиск MP3...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
             for idx, cand in enumerate(candidates, 1):
                 if idx > 1:
-                    print(f"\n[*] Soulseek: Пробуем резервного кандидата #{idx} от {cand['slskd_username']}...")
+                    print(f"[*] Soulseek: резервный пир #{idx} ({cand['slskd_username']})...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
@@ -182,11 +171,11 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
                     source_used = f"Soulseek ({cand['quality']})"
                     break
             if not file_path and candidates:
-                print(f"[!] Soulseek: Ни один из {len(candidates)} кандидатов не смог отдать файл.")
+                print(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
         # Шаг MP3-3: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
         if not file_path:
-            print("\n[*] Попытка поиска и скачивания с YouTube Music (CSVMusic matcher)...")
+            print("[*] YouTube Music: поиск и скачивание...")
             direct_yt = meta.get("youtube_music_url")
 
             file_path = download_youtube_track(
@@ -204,7 +193,7 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
 
         # Шаг MP3-4: Финальный фолбек
         if not file_path:
-            print("\n[*] Запуск финального прямого фолбека через yt-dlp...")
+            print("[*] yt-dlp: фолбек-скачивание...")
             fallback_target = meta.get("youtube_music_url") or meta.get("soundcloud_url") or url_or_query
             file_path = download_fallback_track(
                 url=fallback_target,
@@ -230,8 +219,7 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
 
     # 4. Если скачивание успешно, вшиваем метаданные и обложку
     if file_path and file_path.exists():
-        print(f"\n[+] Успешно скачан файл с источника: {source_used}")
-        print(f"[*] Запись тегов и обложки в {file_path.name}...")
+        print(f"[*] Тегирование: {file_path.name} ({source_used})...")
         
         # Определяем метку качества по фактическому файлу
         suffix = file_path.suffix.lower()
@@ -286,5 +274,5 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
         )
         return file_path
     else:
-        print(f"\n[-] Не удалось скачать трек ни с одного из доступных источников.")
+        print("[-] Не удалось скачать трек ни с одного источника.")
         return None

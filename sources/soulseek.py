@@ -63,12 +63,10 @@ class EmbeddedSoulseek:
         self.thread.start()
         connected = self._connected.wait(timeout=10)
         if not connected:
-            if self._init_error:
-                print(f"[!] Soulseek: Ошибка входа: {self._init_error}")
-            else:
-                print("[!] Soulseek: Превышено время ожидания авторизации на сервере Soulseek")
+            err = f": {self._init_error}" if self._init_error else " (таймаут)"
+            print(f"[!] Soulseek: ошибка подключения{err}")
         else:
-            print(f"[+] Soulseek: Авторизация успешна (пользователь: {self.username})")
+            print(f"[+] Soulseek: вход выполнен ({self.username})")
 
     def _run_loop(self):
         self.loop = asyncio.new_event_loop()
@@ -78,7 +76,6 @@ class EmbeddedSoulseek:
             self.loop.run_forever()
         except Exception as e:
             self._init_error = str(e)
-            print(f"[!] Soulseek: Ошибка в фоновом потоке: {e}")
 
     async def _async_init(self):
         try:
@@ -103,17 +100,9 @@ class EmbeddedSoulseek:
             self._connected.set()
         except Exception as e:
             self._init_error = str(e)
-            print(f"[!] Soulseek: Не удалось подключиться к серверу Soulseek: {e}")
 
     def search(self, query: str, timeout: float = 6.0) -> List[Dict[str, Any]]:
-        if not self._connected.is_set():
-            if self._init_error:
-                print(f"[!] Soulseek: Ошибка авторизации на сервере Soulseek: {self._init_error}")
-            else:
-                print("[!] Soulseek: Нет подключения к серверу Soulseek (авторизация не завершена)")
-            return []
-        if not self.loop or not self.client:
-            print("[!] Soulseek: Внутренний P2P-клиент не инициализирован")
+        if not self._connected.is_set() or not self.loop or not self.client:
             return []
         try:
             future = asyncio.run_coroutine_threadsafe(self._async_search(query, timeout), self.loop)
@@ -371,7 +360,7 @@ def search_soulseek(
     query = re.sub(r"[\-\–\—\:\,\.\(\)\[\]\/\\]+", " ", query)
     query = re.sub(r"\s+", " ", query).strip()
     
-    print(f"[*] Soulseek: Поиск '{query}' (целевое качество: {target_quality})...")
+    print(f"[*] Soulseek: поиск '{query}' [{target_quality}]...")
     
     art_tokens = toks(clean_art)
     tit_tokens = toks(clean_tit)
@@ -381,9 +370,9 @@ def search_soulseek(
     es = EmbeddedSoulseek.get_instance()
     if not es and not SLSKD_URL:
         if not SLSK_USER or not SLSK_PASS:
-            print("[!] Soulseek: Логин или пароль не указаны в .env (переменные SLSK_USER, SLSK_PASS)")
+            print("[!] Soulseek: не указаны SLSK_USER и SLSK_PASS в .env")
         elif not AIOSLSK_AVAILABLE:
-            print(f"[!] Soulseek: Библиотека aioslsk не доступна ({AIOSLSK_ERROR or 'ошибка импорта'})")
+            print(f"[!] Soulseek: aioslsk недоступен ({AIOSLSK_ERROR or 'ошибка импорта'})")
         return []
 
     if es:
@@ -394,14 +383,14 @@ def search_soulseek(
             simplified_tit = re.sub(r"\s+", " ", simplified_tit).strip()
             simplified_query = f"{clean_art} {simplified_tit}".strip()
             if simplified_query and simplified_query.lower() != query.lower():
-                print(f"[*] Soulseek: 0 результатов по полному запросу. Пробуем упрощённый: '{simplified_query}'...")
+                print(f"[*] Soulseek: повтор без спецслов: '{simplified_query}'...")
                 raw_items = es.search(simplified_query, timeout=6.0)
 
         if not raw_items:
-            print(f"[!] Soulseek: 0 файлов найдено в сети по запросу '{query}'.")
+            print(f"[!] Soulseek: 0 файлов по запросу '{query}'")
         else:
             peers_cnt = len(set(item["username"] for item in raw_items))
-            print(f"[*] Soulseek: Получено {len(raw_items)} файлов от {peers_cnt} пиров. Фильтрация качества...")
+            print(f"[*] Soulseek: получено {len(raw_items)} файлов ({peers_cnt} пиров)...")
 
         for item in raw_items:
             raw_candidates.append({
@@ -536,24 +525,23 @@ def search_soulseek(
 
     if not results:
         if raw_candidates:
-            print(f"[!] Soulseek: Ни один из {len(raw_candidates)} найденных файлов не прошёл фильтры качества ({target_quality}):")
+            reasons = []
             if rejected_lossy:
-                print(f"    • {rejected_lossy} шт. — MP3/Lossy (в режиме FLAC отклонены)")
+                reasons.append(f"{rejected_lossy} lossy")
             if rejected_duration:
-                print(f"    • {rejected_duration} шт. — не совпала длительность (> 45 сек расхождение)")
+                reasons.append(f"{rejected_duration} по длительности")
             if rejected_names:
-                print(f"    • {rejected_names} шт. — не совпали артист/название в имени файла")
+                reasons.append(f"{rejected_names} не то имя")
             if rejected_low_bitrate:
-                print(f"    • {rejected_low_bitrate} шт. — низкий битрейт (< 240 kbps)")
+                reasons.append(f"{rejected_low_bitrate} битрейт <240k")
             if rejected_remix:
-                print(f"    • {rejected_remix} шт. — нежелательные ремиксы/каверы/лайвы")
+                reasons.append(f"{rejected_remix} ремикс/кавер")
+            reasons_str = f" ({', '.join(reasons)})" if reasons else ""
+            print(f"[!] Soulseek: отсеяно {len(raw_candidates)} файлов{reasons_str}")
     else:
         best = results[0]
-        free_str = "свободный слот" if best["has_free_slot"] else f"очередь {best['queue_length']}"
-        print(f"[+] Soulseek: Отобрано кандидатов: {len(results)}. Лучший: '{Path(best['slskd_filename']).name}' | {best['quality']} (пир: {best['slskd_username']}, {free_str})")
-        if len(results) > 1:
-            alts = [f"{r['slskd_username']} ({r['quality']})" for r in results[1:3]]
-            print(f"    Резервные пиры: {', '.join(alts)}")
+        free_str = "слот" if best["has_free_slot"] else f"очередь {best['queue_length']}"
+        print(f"[+] Soulseek: лучший из {len(results)}: '{Path(best['slskd_filename']).name}' | {best['quality']} ({best['slskd_username']}, {free_str})")
 
     return results[:limit]
 
@@ -575,7 +563,7 @@ def download_soulseek_track(
     # 1. Приоритет: встроенный Soulseek клиент
     es = EmbeddedSoulseek.get_instance()
     if es:
-        print(f"[*] Soulseek: Постановка в очередь '{file_name}' от {username} (встроенный клиент)")
+        print(f"[*] Soulseek: скачивание '{file_name}' ({username})...")
         downloaded = es.download(username, filename, timeout=120.0)
         if downloaded and downloaded.exists():
             dest_path = dest_dir / file_name
@@ -583,7 +571,7 @@ def download_soulseek_track(
                 shutil.copy2(downloaded, dest_path)
 
             if target_quality == "MP3" and dest_path.suffix.lower() == ".flac":
-                print(f"[*] Soulseek: Транскодирование Lossless исходника в честный MP3 320 kbps (LAME CBR)...")
+                print(f"[*] Soulseek: FLAC -> MP3 320k CBR...")
                 mp3_path = dest_path.with_suffix(".mp3")
                 cmd = [
                     "ffmpeg", "-y", "-i", str(dest_path),
@@ -599,20 +587,20 @@ def download_soulseek_track(
                             pass
                     dest_path = mp3_path
 
-            print(f"[+] Soulseek: Файл успешно получен: {dest_path}")
+            print(f"[+] Soulseek: скачан {dest_path.name}")
             return dest_path
 
     # 2. Резерв: внешний slskd HTTP API
     token = get_slskd_token()
     if not token:
         if not es:
-            print("[!] Soulseek: Клиент не настроен (задайте SLSK_USER и SLSK_PASS в .env)")
+            print("[!] Soulseek: клиент не настроен (задайте SLSK_USER и SLSK_PASS в .env)")
         return None
         
     headers = {"Authorization": f"Bearer {token}"}
     queue_item = {"filename": filename, "size": size}
     
-    print(f"[*] Soulseek: Постановка в очередь '{file_name}' от {username} (slskd API)")
+    print(f"[*] Soulseek: скачивание '{file_name}' ({username}, slskd)...")
     
     try:
         resp = httpx.post(

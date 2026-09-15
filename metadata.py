@@ -156,23 +156,18 @@ def resolve_direct_streaming_link(url: str) -> Optional[dict]:
     url = unshorten_url(url)
     url_lower = url.lower()
     if "spotify.com" in url_lower:
-        print("[*] Прямой опрос Spotify для получения метаданных...")
         res = resolve_spotify_track(url)
         if res: return res
     elif "apple.com" in url_lower:
-        print("[*] Прямой опрос Apple Music для получения метаданных...")
         res = resolve_apple_music_track(url)
         if res: return res
     elif "deezer.com" in url_lower or "deezer.page.link" in url_lower:
-        print("[*] Прямой опрос Deezer для получения метаданных...")
         res = resolve_deezer_track(url)
         if res: return res
     elif "music.yandex" in url_lower or "yandex.ru/album" in url_lower:
-        print("[*] Прямой опрос Яндекс Музыки для получения метаданных...")
         res = resolve_yandex_music_track(url)
         if res: return res
     elif "soundcloud.com" in url_lower:
-        print("[*] Прямой опрос SoundCloud для получения метаданных...")
         res = resolve_soundcloud_track(url)
         if res: return res
     return None
@@ -758,7 +753,7 @@ def get_track_metadata(url: str) -> dict:
     3. При необходимости - поиск оригинального альбома через MusicBrainz.
     4. Получение жанров из Last.fm.
     """
-    print(f"[*] Разрешение метаданных для: {url}")
+    print(f"[*] Метаданные: {url}...")
     info = resolve_song_link(url)
     direct_info = resolve_direct_streaming_link(url)
     if direct_info:
@@ -786,12 +781,10 @@ def get_track_metadata(url: str) -> dict:
 
     dz_meta = None
     if info.get("deezer_id"):
-        print("[*] Получение метаданных напрямую из Deezer API...")
         dz_meta = fetch_deezer_metadata(info["deezer_id"])
         
     isrc_query = info.get("isrc") or (dz_meta.get("isrc") if dz_meta else None)
     
-    print("[*] Получение метаданных из iTunes API...")
     itunes_meta = fetch_itunes_metadata(artist=artist_query, title=title_query, isrc=isrc_query)
     
     # Если song.link не связал трек со стримингами (например, ссылка с Я.Музыки или SoundCloud),
@@ -804,7 +797,6 @@ def get_track_metadata(url: str) -> dict:
     
     discogs_meta = None
     if config.DISCOGS_TOKEN and artist_query and title_query:
-        print("[*] Получение метаданных из Discogs API...")
         discogs_meta = fetch_discogs_metadata(artist_query, title_query)
 
     # Объединяем информацию
@@ -834,10 +826,8 @@ def get_track_metadata(url: str) -> dict:
     mb_data = None
     if is_compilation or not album:
         if isrc:
-            print(f"[*] Ищем оригинальный альбом в MusicBrainz по ISRC: {isrc}")
             mb_data = fetch_musicbrainz_by_isrc(isrc, info.get("artist", ""))
         if not mb_data and info.get("artist") and info.get("title"):
-            print(f"[*] Ищем оригинальный альбом в MusicBrainz по тексту: {info['artist']} - {info['title']}")
             mb_data = search_musicbrainz_by_text(info["artist"], info["title"])
             
     if mb_data:
@@ -848,11 +838,9 @@ def get_track_metadata(url: str) -> dict:
         
     # Получаем жанры из Last.fm
     if info.get("artist") and info.get("title"):
-        print("[*] Получение жанров из Last.fm...")
         genres = fetch_lastfm_genres(info["artist"], info["title"])
         if genres:
             info["genre"] = genres
-            print(f"[+] Получены жанры: {genres}")
             
     return sanitize_metadata_strings(info)
 
@@ -862,7 +850,7 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
     Приоритет: iTunes/Apple Music (с отсевом сборников) -> song.link -> Deezer -> Last.fm.
     Фолбек: YouTube Music -> MusicBrainz.
     """
-    print(f"[*] Поиск канонических метаданных для: '{query}'")
+    print(f"[*] Метаданные: '{query}'...")
     
     # 1. Сначала опрашиваем официальный каталог iTunes / Apple Music.
     # Это гарантирует получение студийного альбома (а не VA / Rare RnB), канонических имен и качественного арта.
@@ -929,7 +917,6 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
 
         # Отправляем ссылку на Apple Music в song.link для связки с Deezer и ISRC
         if apple_url:
-            print(f"[*] Разрешение связей трека через song.link...")
             sl_meta = resolve_song_link(apple_url)
             if sl_meta:
                 for k in ("deezer_id", "spotify_url", "youtube_music_url", "isrc"):
@@ -957,7 +944,7 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
 
     # 2. Фолбек на YouTube Music, если iTunes не нашел трек
     if not meta:
-        print(f"[*] Поиск трека в каталоге YouTube Music: '{query}'")
+        print(f"[*] YouTube Music: поиск '{query}'...")
         best_track: Optional[dict] = None
         best_score = -1.0
         try:
@@ -1024,10 +1011,8 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
         isrc = meta.get("isrc")
         mb_data = None
         if isrc:
-            print(f"[*] Ищем оригинальный студийный альбом в MusicBrainz по ISRC: {isrc}")
             mb_data = fetch_musicbrainz_by_isrc(isrc, meta.get("artist", ""))
         if not mb_data and meta.get("artist") and meta.get("title"):
-            print(f"[*] Ищем оригинальный студийный альбом в MusicBrainz по тексту: {meta['artist']} - {meta['title']}")
             mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
         if mb_data:
             for key in ("album", "year", "track_number", "track_total", "album_artist"):

@@ -84,7 +84,6 @@ def apply_metadata(
                 audio.clear_pictures()
                 audio.add_picture(pic)
             audio.save()
-            print(f"[+] Теги FLAC записаны успешно.")
 
         elif suffix == '.mp3':
             try:
@@ -143,7 +142,6 @@ def apply_metadata(
                     )
                 )
                 mp3.save(v2_version=3)
-            print(f"[+] Теги MP3 записаны успешно.")
 
         elif suffix in ['.m4a', '.mp4']:
             audio = MP4(str(file_path))
@@ -170,7 +168,6 @@ def apply_metadata(
                 cover_format = MP4Cover.FORMAT_PNG if "png" in art_mime else MP4Cover.FORMAT_JPEG
                 audio["covr"] = [MP4Cover(art_bytes, imageformat=cover_format)]
             audio.save()
-            print(f"[+] Теги M4A записаны успешно.")
 
         elif suffix in ['.opus', '.ogg']:
             audio = OggOpus(str(file_path))
@@ -204,7 +201,6 @@ def apply_metadata(
                 except Exception:
                     pass
             audio.save()
-            print(f"[+] Теги OPUS/OGG записаны успешно.")
             
         else:
             print(f"[!] Неподдерживаемый формат файла для теггирования: {suffix}")
