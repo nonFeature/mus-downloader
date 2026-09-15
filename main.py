@@ -5,6 +5,7 @@
 #   "httpx",
 #   "yt-dlp",
 #   "ytmusicapi",
+#   "aioslsk>=1.5.0",
 # ]
 # ///
 

@@ -93,7 +93,9 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
         if not file_path and (config.SLSK_USER or config.SLSKD_URL):
             print("[*] Поиск FLAC на Soulseek...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
-            for cand in candidates:
+            for idx, cand in enumerate(candidates, 1):
+                if idx > 1:
+                    print(f"\n[*] Soulseek: Пробуем резервного кандидата #{idx} от {cand['slskd_username']}...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
@@ -104,6 +106,8 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
                 if file_path:
                     source_used = f"Soulseek ({cand['quality']})"
                     break
+            if not file_path and candidates:
+                print(f"[!] Soulseek: Ни один из {len(candidates)} кандидатов не смог отдать файл.")
 
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
         if not file_path and deezer_id:
@@ -164,7 +168,9 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
         if not file_path and (config.SLSK_USER or config.SLSKD_URL):
             print("\n[*] Поиск MP3 на Soulseek...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
-            for cand in candidates:
+            for idx, cand in enumerate(candidates, 1):
+                if idx > 1:
+                    print(f"\n[*] Soulseek: Пробуем резервного кандидата #{idx} от {cand['slskd_username']}...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
@@ -175,6 +181,8 @@ def download_track_by_link(url_or_query: str, target_quality: str = "MP3") -> Op
                 if file_path:
                     source_used = f"Soulseek ({cand['quality']})"
                     break
+            if not file_path and candidates:
+                print(f"[!] Soulseek: Ни один из {len(candidates)} кандидатов не смог отдать файл.")
 
         # Шаг MP3-3: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
         if not file_path:

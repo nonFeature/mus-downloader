@@ -21,8 +21,10 @@ try:
     from aioslsk.protocol.primitives import AttributeKey
     from aioslsk.transfer.state import TransferState
     AIOSLSK_AVAILABLE = True
-except ImportError:
+    AIOSLSK_ERROR = None
+except Exception as e:
     AIOSLSK_AVAILABLE = False
+    AIOSLSK_ERROR = str(e)
 
 class EmbeddedSoulseek:
     """
@@ -65,6 +67,8 @@ class EmbeddedSoulseek:
                 print(f"[!] Soulseek: Ошибка входа: {self._init_error}")
             else:
                 print("[!] Soulseek: Превышено время ожидания авторизации на сервере Soulseek")
+        else:
+            print(f"[+] Soulseek: Авторизация успешна (пользователь: {self.username})")
 
     def _run_loop(self):
         self.loop = asyncio.new_event_loop()
@@ -102,13 +106,20 @@ class EmbeddedSoulseek:
             print(f"[!] Soulseek: Не удалось подключиться к серверу Soulseek: {e}")
 
     def search(self, query: str, timeout: float = 6.0) -> List[Dict[str, Any]]:
-        if not self._connected.is_set() or not self.loop or not self.client:
+        if not self._connected.is_set():
+            if self._init_error:
+                print(f"[!] Soulseek: Ошибка авторизации на сервере Soulseek: {self._init_error}")
+            else:
+                print("[!] Soulseek: Нет подключения к серверу Soulseek (авторизация не завершена)")
+            return []
+        if not self.loop or not self.client:
+            print("[!] Soulseek: Внутренний P2P-клиент не инициализирован")
             return []
         try:
             future = asyncio.run_coroutine_threadsafe(self._async_search(query, timeout), self.loop)
             return future.result(timeout=timeout + 5)
         except Exception as e:
-            print(f"[!] Soulseek: Ошибка поиска: {e}")
+            print(f"[!] Soulseek: Ошибка P2P-поиска: {e}")
             return []
 
     async def _async_search(self, query: str, timeout: float) -> List[Dict[str, Any]]:
@@ -368,8 +379,30 @@ def search_soulseek(
 
     # 1. Приоритет: встроенный клиент Soulseek
     es = EmbeddedSoulseek.get_instance()
+    if not es and not SLSKD_URL:
+        if not SLSK_USER or not SLSK_PASS:
+            print("[!] Soulseek: Логин или пароль не указаны в .env (переменные SLSK_USER, SLSK_PASS)")
+        elif not AIOSLSK_AVAILABLE:
+            print(f"[!] Soulseek: Библиотека aioslsk не доступна ({AIOSLSK_ERROR or 'ошибка импорта'})")
+        return []
+
     if es:
         raw_items = es.search(query, timeout=6.0)
+        # Если ничего не нашли, а в названии были маркеры версий или года, пробуем упрощенный запрос
+        if not raw_items:
+            simplified_tit = re.sub(r"\b(edit|version|remastered|remaster|radio|original|mix|\d{4})\b", " ", clean_tit, flags=re.I)
+            simplified_tit = re.sub(r"\s+", " ", simplified_tit).strip()
+            simplified_query = f"{clean_art} {simplified_tit}".strip()
+            if simplified_query and simplified_query.lower() != query.lower():
+                print(f"[*] Soulseek: 0 результатов по полному запросу. Пробуем упрощённый: '{simplified_query}'...")
+                raw_items = es.search(simplified_query, timeout=6.0)
+
+        if not raw_items:
+            print(f"[!] Soulseek: 0 файлов найдено в сети по запросу '{query}'.")
+        else:
+            peers_cnt = len(set(item["username"] for item in raw_items))
+            print(f"[*] Soulseek: Получено {len(raw_items)} файлов от {peers_cnt} пиров. Фильтрация качества...")
+
         for item in raw_items:
             raw_candidates.append({
                 "username": item["username"],
@@ -424,6 +457,12 @@ def search_soulseek(
                 print(f"[!] Soulseek: Ошибка slskd API: {e}")
 
     results = []
+    rejected_names = 0
+    rejected_lossy = 0
+    rejected_duration = 0
+    rejected_low_bitrate = 0
+    rejected_remix = 0
+
     for cand in raw_candidates:
         filename = cand["filename"]
         fn_tokens = toks(filename)
@@ -432,6 +471,7 @@ def search_soulseek(
         tit_overlap = len(tit_tokens & fn_tokens) / max(1, len(tit_tokens))
         
         if art_overlap < 0.6 or tit_overlap < 0.6:
+            rejected_names += 1
             continue
             
         f_info = cand["file_info"]
@@ -443,6 +483,12 @@ def search_soulseek(
         )
         
         if quality_score <= 0:
+            if quality_label == "Lossy":
+                rejected_lossy += 1
+            elif quality_label == "Invalid Duration":
+                rejected_duration += 1
+            elif "Low Bitrate" in quality_label:
+                rejected_low_bitrate += 1
             continue
             
         target_query = f"{artist} {title}"
@@ -451,11 +497,14 @@ def search_soulseek(
         extra_vm = cand_vm - target_vm
         if extra_vm & {"remix", "cover", "karaoke", "instrumental", "tribute", "parody", "live"}:
             quality_score -= 1500.0
+            if quality_score <= 0:
+                rejected_remix += 1
+                continue
         elif extra_vm:
             quality_score -= 500.0
-            
-        if quality_score <= 0:
-            continue
+            if quality_score <= 0:
+                rejected_remix += 1
+                continue
             
         has_free_slot = cand["has_free_slot"]
         queue_length = cand["queue_length"]
@@ -484,6 +533,28 @@ def search_soulseek(
         })
         
     results.sort(key=lambda x: x["total_rank"], reverse=True)
+
+    if not results:
+        if raw_candidates:
+            print(f"[!] Soulseek: Ни один из {len(raw_candidates)} найденных файлов не прошёл фильтры качества ({target_quality}):")
+            if rejected_lossy:
+                print(f"    • {rejected_lossy} шт. — MP3/Lossy (в режиме FLAC отклонены)")
+            if rejected_duration:
+                print(f"    • {rejected_duration} шт. — не совпала длительность (> 45 сек расхождение)")
+            if rejected_names:
+                print(f"    • {rejected_names} шт. — не совпали артист/название в имени файла")
+            if rejected_low_bitrate:
+                print(f"    • {rejected_low_bitrate} шт. — низкий битрейт (< 240 kbps)")
+            if rejected_remix:
+                print(f"    • {rejected_remix} шт. — нежелательные ремиксы/каверы/лайвы")
+    else:
+        best = results[0]
+        free_str = "свободный слот" if best["has_free_slot"] else f"очередь {best['queue_length']}"
+        print(f"[+] Soulseek: Отобрано кандидатов: {len(results)}. Лучший: '{Path(best['slskd_filename']).name}' | {best['quality']} (пир: {best['slskd_username']}, {free_str})")
+        if len(results) > 1:
+            alts = [f"{r['slskd_username']} ({r['quality']})" for r in results[1:3]]
+            print(f"    Резервные пиры: {', '.join(alts)}")
+
     return results[:limit]
 
 def download_soulseek_track(
