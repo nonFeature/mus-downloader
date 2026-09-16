@@ -10,7 +10,7 @@ USER_AGENT = "MusicDownloader/1.0 (akate@gmail.com)"
 def resolve_spotify_track(url: str) -> Optional[dict]:
     """Извлекает метаданные трека напрямую со страницы Spotify."""
     try:
-        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=3.5)
         if r.status_code != 200:
             return None
         title_m = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
@@ -36,13 +36,13 @@ def resolve_spotify_track(url: str) -> Optional[dict]:
                 "spotify_url": str(r.url)
             }
     except Exception as e:
-        print(f"[!] Ошибка разбора ссылки Spotify: {e}")
+        print(f"[!] Spotify: {e}")
     return None
 
 def resolve_apple_music_track(url: str) -> Optional[dict]:
     """Извлекает метаданные трека напрямую из Apple Music / iTunes."""
     try:
-        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=4.0)
         final_url = str(r.url)
         m = re.search(r"[?&]i=(\d+)", final_url)
         track_id = m.group(1) if m else None
@@ -50,7 +50,7 @@ def resolve_apple_music_track(url: str) -> Optional[dict]:
             m2 = re.search(r"/album/[^/]+/(\d+)", final_url)
             track_id = m2.group(1) if m2 else None
         if track_id:
-            lookup = httpx.get(f"https://itunes.apple.com/lookup?id={track_id}", timeout=10)
+            lookup = httpx.get(f"https://itunes.apple.com/lookup?id={track_id}", timeout=4.0)
             if lookup.status_code == 200:
                 res = lookup.json().get("results", [])
                 if res:
@@ -67,17 +67,17 @@ def resolve_apple_music_track(url: str) -> Optional[dict]:
                         "duration": (item.get("trackTimeMillis", 0) / 1000.0) if item.get("trackTimeMillis") else None
                     }
     except Exception as e:
-        print(f"[!] Ошибка разбора ссылки Apple Music: {e}")
+        print(f"[!] Apple Music: {e}")
     return None
 
 def resolve_deezer_track(url: str) -> Optional[dict]:
     """Извлекает метаданные напрямую из Deezer API."""
     try:
-        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=8)
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=3.5)
         m = re.search(r"track/(\d+)", str(r.url))
         if m:
             track_id = m.group(1)
-            meta = httpx.get(f"https://api.deezer.com/track/{track_id}", timeout=8).json()
+            meta = httpx.get(f"https://api.deezer.com/track/{track_id}", timeout=3.5).json()
             if "error" not in meta:
                 album = meta.get("album", {})
                 return {
@@ -98,7 +98,7 @@ def resolve_deezer_track(url: str) -> Optional[dict]:
 def resolve_yandex_music_track(url: str) -> Optional[dict]:
     """Извлекает метаданные трека со страницы Яндекс.Музыки."""
     try:
-        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=10)
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, follow_redirects=True, timeout=4.0)
         title_m = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
         art_m = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
         musician_m = re.search(r'<meta name="music:musician_description" content="([^"]+)"', r.text)
@@ -116,7 +116,7 @@ def resolve_yandex_music_track(url: str) -> Optional[dict]:
                 "album_art": art
             }
     except Exception as e:
-        print(f"[!] Ошибка разбора ссылки Яндекс Музыки: {e}")
+        print(f"[!] Яндекс Музыка: {e}")
     return None
 
 def unshorten_url(url: str) -> str:
@@ -124,7 +124,7 @@ def unshorten_url(url: str) -> str:
     short_domains = ["on.soundcloud.com", "spotify.link", "deezer.page.link", "t.co", "bit.ly", "tinyurl.com"]
     if any(d in url.lower() for d in short_domains):
         try:
-            with httpx.Client(follow_redirects=True, timeout=5) as client:
+            with httpx.Client(follow_redirects=True, timeout=3.0) as client:
                 r = client.head(url)
                 return str(r.url)
         except Exception:
@@ -134,7 +134,7 @@ def unshorten_url(url: str) -> str:
 def resolve_soundcloud_track(url: str) -> Optional[dict]:
     """Извлекает метаданные трека из SoundCloud через публичный oEmbed."""
     try:
-        r = httpx.get("https://soundcloud.com/oembed", params={"format": "json", "url": url}, timeout=6)
+        r = httpx.get("https://soundcloud.com/oembed", params={"format": "json", "url": url}, timeout=3.5)
         if r.status_code == 200:
             data = r.json()
             title = data.get("title", "")
@@ -172,22 +172,98 @@ def resolve_direct_streaming_link(url: str) -> Optional[dict]:
         if res: return res
     return None
 
+def _parse_odesli_api_data(data: dict) -> Optional[dict]:
+    """Парсит ответ официального API Odesli/Songlink."""
+    entities = data.get("entitiesByUniqueId", {})
+    if not entities:
+        return None
+
+    entity_id = data.get("entityUniqueId")
+    entity = entities.get(entity_id) if entity_id else next(iter(entities.values()))
+    if not entity:
+        return None
+
+    result = {
+        "title": entity.get("title", ""),
+        "artist": entity.get("artistName", ""),
+        "album": entity.get("albumName"),
+        "album_art": entity.get("thumbnailUrl", ""),
+        "year": None,
+        "isrc": None,
+        "duration": None,
+        "track_number": None,
+        "explicit": False,
+        "deezer_id": None,
+        "spotify_url": None,
+        "youtube_music_url": None,
+        "apple_music_url": None,
+        "soundcloud_url": None,
+        "yandex_url": None,
+    }
+
+    for uid, ent in entities.items():
+        prov = ent.get("apiProvider")
+        if ent.get("type") == "song" and prov == "deezer" and ent.get("id"):
+            result["deezer_id"] = str(ent.get("id"))
+            break
+
+    links_by_plat = data.get("linksByPlatform", {})
+    for plat, p_info in links_by_plat.items():
+        p_url = p_info.get("url") if isinstance(p_info, dict) else None
+        if not p_url:
+            continue
+        if plat == "deezer" and not result.get("deezer_id"):
+            m_dz = re.search(r"track/(\d+)", p_url)
+            if m_dz:
+                result["deezer_id"] = m_dz.group(1)
+        elif plat == "spotify" and not result.get("spotify_url"):
+            result["spotify_url"] = p_url
+        elif plat in ("youtubeMusic", "youtube") and not result.get("youtube_music_url"):
+            result["youtube_music_url"] = p_url
+        elif plat in ("appleMusic", "itunes") and not result.get("apple_music_url"):
+            result["apple_music_url"] = p_url
+        elif plat == "soundcloud" and not result.get("soundcloud_url"):
+            result["soundcloud_url"] = p_url
+        elif plat == "yandex" and not result.get("yandex_url"):
+            result["yandex_url"] = p_url
+
+    return result if (result.get("title") and result.get("artist")) else None
+
+
 def resolve_song_link(url: str) -> Optional[dict]:
     """
     Запрашивает song.link (Odesli) и извлекает связи между платформами и метаданные.
     Поддерживает ссылки с Яндекс.Музыки, SoundCloud, Spotify, Apple Music, Deezer, Tidal, YouTube и др.
-    Использует веб-скрейпинг Next.js payload (__NEXT_DATA__), что не требует API-ключей.
+    
+    1. При наличии SONGLINK_API_KEY использует официальный REST API Odesli.
+    2. Если ключ не задан, использует веб-скрейпинг Next.js payload (__NEXT_DATA__),
+       что позволяет работать бесплатно без регистрации и ограничений API.
     """
     url = unshorten_url(url)
+
+    # 1. При наличии API-ключа используем официальный REST API Odesli
+    songlink_key = getattr(config, "SONGLINK_API_KEY", "") or ""
+    if songlink_key:
+        try:
+            encoded_url = urllib.parse.quote(url)
+            api_url = f"https://api.song.link/v1-alpha.1/links?url={encoded_url}&key={songlink_key}"
+            resp = httpx.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=8.0)
+            if resp.status_code == 200:
+                parsed = _parse_odesli_api_data(resp.json())
+                if parsed:
+                    return parsed
+        except Exception as e:
+            logger.debug(f"Ошибка запроса к Odesli REST API: {e}")
+
+    # 2. Бесплатный веб-скрейпинг song.link (не требует API ключа)
     try:
-        # 1. Сначала пробуем парсинг через веб-интерфейс song.link (не требует API ключа)
         songlink_url = f"https://song.link/{url}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         resp = httpx.get(songlink_url, headers=headers, follow_redirects=True, timeout=12)
         if resp.status_code == 200:
-            m = re.search(r'<script id="__NEXT_DATA__" type="application/json">({.*?})</script>', resp.text)
+            m = re.search(r'<script id="__NEXT_DATA__" type="application/json">\s*(\{.*?\})\s*</script>', resp.text, re.DOTALL)
             if m:
                 import json
                 data = json.loads(m.group(1))
@@ -272,33 +348,15 @@ def resolve_song_link(url: str) -> Optional[dict]:
     except Exception as e:
         pass
 
-    # 2. Фолбек на api.song.link (если в будущем снова откроют или при наличии ключа)
+    # 3. Фолбек на публичный api.song.link (если когда-либо доступ снова откроют)
     try:
         encoded_url = urllib.parse.quote(url)
         api_url = f"https://api.song.link/v1-alpha.1/links?url={encoded_url}"
-        resp = httpx.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=10)
+        resp = httpx.get(api_url, headers={"User-Agent": USER_AGENT}, timeout=5.0)
         if resp.status_code == 200:
-            data = resp.json()
-            entities = data.get("entitiesByUniqueId", {})
-            if entities:
-                first_entity = next(iter(entities.values()))
-                result = {
-                    "title": first_entity.get("title", ""),
-                    "artist": first_entity.get("artistName", ""),
-                    "album_art": first_entity.get("thumbnailUrl", ""),
-                    "deezer_id": None,
-                    "yandex_id": None,
-                    "tidal_id": None,
-                    "youtube_music_url": None,
-                    "soundcloud_url": None,
-                    "spotify_url": None,
-                    "isrc": None,
-                }
-                for entity_id, entity in entities.items():
-                    provider = entity.get("apiProvider")
-                    if entity.get("type") == "song" and provider == "deezer":
-                        result["deezer_id"] = entity.get("id")
-                return result
+            parsed = _parse_odesli_api_data(resp.json())
+            if parsed:
+                return parsed
     except Exception:
         pass
         
@@ -312,7 +370,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
         return None
     url = f"https://api.deezer.com/track/{deezer_id}"
     try:
-        resp = httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
+        resp = httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=3.0)
         if resp.status_code == 200:
             data = resp.json()
             if "error" in data:
@@ -340,7 +398,7 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
                 "explicit": explicit,
             }
     except Exception as e:
-        print(f"[!] Ошибка запроса метаданных из Deezer: {e}")
+        print(f"[!] Deezer: {e}")
     return None
 
 def fetch_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
@@ -353,11 +411,11 @@ def fetch_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=15)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
-        print(f"[!] Ошибка запроса записи MusicBrainz по ID: {e}")
+        print(f"[!] MusicBrainz: {e}")
     return None
 
 def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[dict]:
@@ -372,7 +430,7 @@ def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=15)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -384,7 +442,7 @@ def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[
                     if full_rec:
                         return parse_mb_recording(full_rec, expected_artist)
     except Exception as e:
-        print(f"[!] Ошибка поиска по ISRC в MusicBrainz: {e}")
+        print(f"[!] MusicBrainz (ISRC): {e}")
     return None
 
 def is_compilation_album(album_title: Optional[str], album_artist: Optional[str] = "") -> bool:
@@ -536,7 +594,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         "limit": 5
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=15)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -557,7 +615,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
                     best_metadata.pop("_score", None)
                     return best_metadata
     except Exception as e:
-        print(f"[!] Ошибка текстового поиска в MusicBrainz: {e}")
+        print(f"[!] MusicBrainz (Search): {e}")
     return None
 
 def score_text_candidate(cand_title: str, cand_artist: str, target_query: str) -> float:
@@ -707,7 +765,9 @@ def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
         "format": "json"
     }
     try:
-        r = httpx.get(url, params=params, timeout=10)
+        r = httpx.get(url, params=params, timeout=3.0)
+        if r.status_code in (401, 403):
+            return None
         tags = []
         if r.status_code == 200:
             data = r.json()
@@ -719,7 +779,9 @@ def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
         if not tags:
             params["method"] = "artist.gettoptags"
             params.pop("track", None)
-            r = httpx.get(url, params=params, timeout=10)
+            r = httpx.get(url, params=params, timeout=3.0)
+            if r.status_code in (401, 403):
+                return None
             if r.status_code == 200:
                 data = r.json()
                 tags_list = data.get("toptags", {}).get("tag", [])
@@ -755,14 +817,15 @@ def get_track_metadata(url: str) -> dict:
     """
     print(f"[*] Метаданные: {url}...")
     info = resolve_song_link(url)
-    direct_info = resolve_direct_streaming_link(url)
-    if direct_info:
-        if not info:
-            info = direct_info
-        else:
-            for k, v in direct_info.items():
-                if v and not info.get(k):
-                    info[k] = v
+    if not info or not info.get("title") or not info.get("artist"):
+        direct_info = resolve_direct_streaming_link(url)
+        if direct_info:
+            if not info:
+                info = direct_info
+            else:
+                for k, v in direct_info.items():
+                    if v and not info.get(k):
+                        info[k] = v
     if not info:
         return {"title": "Unknown Track", "artist": "Unknown Artist", "spotify_url": url if "spotify" in url else None}
         

@@ -19,6 +19,7 @@ dependencies = [
     "yt-dlp>=2024.0.0",
     "ytmusicapi>=1.10.3",
     "aioslsk>=1.5.0",
+    "aiogram>=3.17.0",
 ]
 
 [project.optional-dependencies]

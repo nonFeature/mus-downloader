@@ -6,6 +6,7 @@ import time
 import shutil
 import re
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from config import (
@@ -26,13 +27,30 @@ except Exception as e:
     AIOSLSK_AVAILABLE = False
     AIOSLSK_ERROR = str(e)
 
+class ActiveDownload:
+    """Отслеживает состояние активной P2P-загрузки и подписчиков на неё."""
+    def __init__(self, username: str, filename: str, staging_file: Path, loop: asyncio.AbstractEventLoop, key: str):
+        self.key: str = key
+        self.username: str = username
+        self.filename: str = filename
+        self.staging_file: Path = staging_file
+        self.transfer: Optional[Any] = None
+        self.future: asyncio.Future = loop.create_future()
+        self.subscribers: int = 1
+        self.task: Optional[asyncio.Task] = None
+        self.abort_requested: bool = False
+        self.created_at: float = time.time()
+
 class EmbeddedSoulseek:
     """
     Встроенный Soulseek P2P клиент (на базе aioslsk).
     Работает в отдельном фоновом потоке с собственным asyncio event loop.
+    Поддерживает одновременные загрузки в нескольких потоках без взаимных помех.
     """
     _instance: Optional["EmbeddedSoulseek"] = None
     _lock = threading.Lock()
+    _staging_refs: Dict[Path, int] = {}
+    _staging_lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> Optional["EmbeddedSoulseek"]:
@@ -51,12 +69,72 @@ class EmbeddedSoulseek:
         self.password = password
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.staging_dir = self.download_dir / ".staging"
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
+        # Очистка остатков staging от прошлых сессий
+        if self.staging_dir.exists():
+            for p in self.staging_dir.iterdir():
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        self._staging_refs: Dict[Path, int] = {}
+        self._staging_lock = threading.Lock()
+
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self.client: Optional[Any] = None
         self._connected = threading.Event()
         self._init_error: Optional[str] = None
+        self._active_downloads: Dict[str, ActiveDownload] = {}
         self._start_thread()
+
+    def _increment_staging_ref(self, path: Path):
+        with self._staging_lock:
+            self._staging_refs[path] = self._staging_refs.get(path, 0) + 1
+
+    def _decrement_staging_ref(self, path: Path):
+        with self._staging_lock:
+            if path in self._staging_refs:
+                self._staging_refs[path] -= 1
+                if self._staging_refs[path] <= 0:
+                    del self._staging_refs[path]
+                    try:
+                        path.unlink(missing_ok=True)
+                        parent = path.parent
+                        if parent != self.staging_dir and parent.is_relative_to(self.staging_dir):
+                            try:
+                                parent.rmdir()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+    def cleanup_staging_file(self, path: Path):
+        """Потокобезопасное освобождение staging файла. Удаляет файл, когда все потоки закончили работу с ним."""
+        with self._staging_lock:
+            if path in self._staging_refs:
+                self._staging_refs[path] -= 1
+                if self._staging_refs[path] > 0:
+                    return
+                del self._staging_refs[path]
+            try:
+                if path.exists() and path.is_relative_to(self.staging_dir):
+                    path.unlink(missing_ok=True)
+                    parent = path.parent
+                    if parent != self.staging_dir and parent.is_relative_to(self.staging_dir):
+                        try:
+                            parent.rmdir()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    release_staging_file = cleanup_staging_file
 
     def _start_thread(self):
         self.thread = threading.Thread(target=self._run_loop, daemon=True, name="EmbeddedSoulseek")
@@ -113,8 +191,16 @@ class EmbeddedSoulseek:
 
     async def _async_search(self, query: str, timeout: float) -> List[Dict[str, Any]]:
         found = []
+        target_ticket = None
 
         async def on_result(event: SearchResultEvent):
+            if target_ticket is None:
+                return
+            eq = getattr(event, "query", None)
+            if eq is not None:
+                t = getattr(eq, "ticket", None)
+                if t is not None and t != target_ticket:
+                    return
             res = event.result
             for item in res.shared_items:
                 attr_map = item.get_attribute_map()
@@ -133,8 +219,28 @@ class EmbeddedSoulseek:
                 })
 
         self.client.events.register(SearchResultEvent, on_result)
+        req = None
         try:
-            await self.client.searches.search(query)
+            req = await self.client.searches.search(query)
+            if req is not None:
+                target_ticket = getattr(req, "ticket", None)
+                for res in getattr(req, "results", []):
+                    for item in getattr(res, "shared_items", []):
+                        attr_map = item.get_attribute_map()
+                        found.append({
+                            "username": res.username,
+                            "filename": item.filename,
+                            "size": item.filesize,
+                            "bitrate": attr_map.get(AttributeKey.BITRATE, 0),
+                            "duration": attr_map.get(AttributeKey.DURATION, 0),
+                            "sample_rate": attr_map.get(AttributeKey.SAMPLE_RATE, 0),
+                            "bit_depth": attr_map.get(AttributeKey.BIT_DEPTH, 0),
+                            "is_vbr": bool(attr_map.get(AttributeKey.VBR, 0)),
+                            "has_free_slot": res.has_free_slots,
+                            "upload_speed": res.avg_speed,
+                            "queue_length": res.queue_size,
+                        })
+
             start_t = time.time()
             while time.time() - start_t < timeout:
                 await asyncio.sleep(0.5)
@@ -145,6 +251,11 @@ class EmbeddedSoulseek:
                 self.client.events.unregister(SearchResultEvent, on_result)
             except Exception:
                 pass
+            if req is not None and hasattr(self.client.searches, "remove_request"):
+                try:
+                    self.client.searches.remove_request(req)
+                except Exception:
+                    pass
 
         return found
 
@@ -152,73 +263,196 @@ class EmbeddedSoulseek:
         if not self._connected.is_set() or not self.loop or not self.client:
             return None
         try:
-            future = asyncio.run_coroutine_threadsafe(self._async_download(username, filename, timeout), self.loop)
-            return future.result(timeout=timeout + 10)
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_download(username, filename, timeout),
+                self.loop
+            )
+            return future.result(timeout=timeout + 15)
         except Exception as e:
             print(f"[!] Soulseek: Ошибка скачивания: {e}")
             return None
 
-    async def _async_download(self, username: str, filename: str, timeout: float) -> Optional[Path]:
+    async def _run_transfer_loop(self, active: ActiveDownload):
+        norm_key = active.key
+        username = active.username
+        filename = active.filename
+        staging_file = active.staging_file
+        file_basename = staging_file.name
+        transfer = None
+        result_path: Optional[Path] = None
+
         try:
-            transfer = await self.client.transfers.download(username, filename)
-        except Exception as e:
-            print(f"[!] Soulseek: Ошибка постановки в очередь: {e}")
-            return None
+            try:
+                # В aioslsk передаем оригинальный remote_path без подмены слешей
+                transfer = await self.client.transfers.download(username, filename)
+                active.transfer = transfer
+            except Exception as e:
+                print(f"[!] Soulseek [{file_basename}]: Ошибка постановки в очередь: {e}")
+                return
 
-        start = time.time()
-        queued_start = None
-        last_state = None
-        last_print = 0
-        while time.time() - start < timeout:
-            await asyncio.sleep(1)
-            st = transfer.state.VALUE
+            # Изолируем путь скачивания для этой конкретной загрузки
+            transfer.local_path = str(staging_file.resolve())
 
-            if time.time() - last_print >= 2.5 or st != last_state:
-                total_bytes = transfer.filesize or 0
-                cur_bytes = transfer.bytes_transfered or 0
-                total_mb = total_bytes / (1024 * 1024) if total_bytes else 0.0
-                cur_mb = cur_bytes / (1024 * 1024)
-                pct = int((cur_bytes / total_bytes) * 100) if total_bytes else 0
-                print(f"[*] Soulseek: {st.name} ({cur_mb:.1f}/{total_mb:.1f} MB, {pct}%)")
-                last_print = time.time()
-                last_state = st
+            start_t = time.time()
+            queued_start = None
+            last_state = None
+            last_print = 0
+            max_lifetime = 600.0
 
-            # Если пир держит нас в очереди без движения более 15 секунд — отменяем и пробуем следующего
-            if st == TransferState.State.QUEUED:
-                if queued_start is None:
-                    queued_start = time.time()
-                elif time.time() - queued_start > 15:
-                    print("[!] Soulseek: Очередь у пира не продвигается более 15 сек, отмена...")
+            while time.time() - start_t < max_lifetime:
+                if active.abort_requested or active.subscribers <= 0:
+                    print(f"[!] Soulseek [{file_basename}]: Отмена загрузки (все подписчики отключились)")
                     try:
                         await transfer.abort()
                     except Exception:
                         pass
-                    return None
-            else:
-                queued_start = None
+                    return
 
-            if st == TransferState.State.COMPLETE:
-                lp = getattr(transfer, "local_path", None)
-                if lp and Path(lp).exists():
-                    return Path(lp)
-                target_name = Path(filename.replace("\\", "/")).name
-                for cand in self.download_dir.rglob(target_name):
-                    if cand.is_file() and cand.stat().st_size > 0:
-                        return cand
-                await asyncio.sleep(0.5)
-                if lp and Path(lp).exists():
-                    return Path(lp)
-                return None
+                await asyncio.sleep(1)
+                st = transfer.state.VALUE
 
-            elif st in (TransferState.State.FAILED, TransferState.State.ABORTED):
-                print(f"[!] Soulseek: Загрузка завершилась с ошибкой: {st.name}")
-                return None
+                total_bytes = transfer.filesize or 0
+                cur_bytes = transfer.bytes_transfered or 0
 
-        print("[!] Soulseek: Превышено время ожидания скачивания")
-        return None
+                if time.time() - last_print >= 2.5 or st != last_state:
+                    total_mb = total_bytes / (1024 * 1024) if total_bytes else 0.0
+                    cur_mb = cur_bytes / (1024 * 1024)
+                    pct = int((cur_bytes / total_bytes) * 100) if total_bytes else 0
+                    print(f"[*] Soulseek [{file_basename}]: {st.name} ({cur_mb:.1f}/{total_mb:.1f} MB, {pct}%) [{username}]")
+                    last_print = time.time()
+                    last_state = st
+
+                # Проверка очереди у пира:
+                if st == TransferState.State.QUEUED:
+                    # Если пир сейчас параллельно отдает или инициализирует нам другой трек — не считаем очередь зависшей
+                    peer_busy_with_us = any(
+                        other.username.lower() == username.lower()
+                        and other is not active
+                        and other.transfer
+                        and other.transfer.state.VALUE in (
+                            TransferState.State.DOWNLOADING,
+                            TransferState.State.INITIALIZING
+                        )
+                        for other in self._active_downloads.values()
+                    )
+                    if peer_busy_with_us:
+                        queued_start = time.time()
+                    else:
+                        if queued_start is None:
+                            queued_start = time.time()
+                        elif time.time() - queued_start > 15:
+                            print(f"[!] Soulseek [{file_basename}]: Очередь у пира {username} не продвигается более 15 сек, отмена...")
+                            try:
+                                await transfer.abort()
+                            except Exception:
+                                pass
+                            return
+                else:
+                    queued_start = None
+
+                if st == TransferState.State.COMPLETE:
+                    if staging_file.exists() and staging_file.stat().st_size > 0:
+                        result_path = staging_file
+                        return
+                    lp = getattr(transfer, "local_path", None)
+                    if lp and Path(lp).exists() and Path(lp).stat().st_size > 0:
+                        result_path = Path(lp)
+                        return
+
+                    await asyncio.sleep(0.5)
+                    if staging_file.exists() and staging_file.stat().st_size > 0:
+                        result_path = staging_file
+                        return
+                    if lp and Path(lp).exists() and Path(lp).stat().st_size > 0:
+                        result_path = Path(lp)
+                        return
+                    return
+
+                elif st in (TransferState.State.FAILED, TransferState.State.ABORTED):
+                    print(f"[!] Soulseek [{file_basename}]: Загрузка от {username} завершилась с ошибкой: {st.name}")
+                    return
+
+            print(f"[!] Soulseek [{file_basename}]: Превышено максимальное время загрузки ({max_lifetime}s)")
+            try:
+                await transfer.abort()
+            except Exception:
+                pass
+
+        except asyncio.CancelledError:
+            if transfer:
+                try:
+                    await transfer.abort()
+                except Exception:
+                    pass
+            raise
+
+        finally:
+            if not active.future.done():
+                active.future.set_result(result_path)
+
+            self._active_downloads.pop(norm_key, None)
+
+            if transfer:
+                try:
+                    await self.client.transfers.remove(transfer)
+                except Exception:
+                    pass
+
+            if result_path is None:
+                self._decrement_staging_ref(staging_file)
+
+    async def _async_download(self, username: str, filename: str, timeout: float) -> Optional[Path]:
+        norm_fn = filename.replace("/", "\\").strip("\\").lower()
+        norm_user = username.strip().lower()
+        norm_key = f"{norm_user}:{norm_fn}"
+        file_basename = Path(filename.replace("\\", "/")).name
+
+        if norm_key in self._active_downloads and not self._active_downloads[norm_key].future.done():
+            active = self._active_downloads[norm_key]
+            active.subscribers += 1
+            self._increment_staging_ref(active.staging_file)
+            print(f"[*] Soulseek [{file_basename}]: Подключение к уже активной загрузке ({username})...")
+        else:
+            self._active_downloads.pop(norm_key, None)
+            staging_subdir = self.staging_dir / uuid.uuid4().hex
+            staging_subdir.mkdir(parents=True, exist_ok=True)
+            staging_file = staging_subdir / file_basename
+
+            active = ActiveDownload(username, filename, staging_file, self.loop, key=norm_key)
+            self._active_downloads[norm_key] = active
+            self._increment_staging_ref(staging_file)
+
+            active.task = asyncio.create_task(self._run_transfer_loop(active))
+
+        try:
+            res = await asyncio.wait_for(asyncio.shield(active.future), timeout=timeout)
+            if res and res.exists():
+                return res
+            self._decrement_staging_ref(active.staging_file)
+            return None
+        except asyncio.TimeoutError:
+            print(f"[!] Soulseek [{file_basename}]: Превышено время ожидания скачивания ({timeout}s)")
+            self._decrement_staging_ref(active.staging_file)
+            return None
+        except Exception as e:
+            print(f"[!] Soulseek [{file_basename}]: Ошибка ожидания загрузки: {e}")
+            self._decrement_staging_ref(active.staging_file)
+            return None
+        finally:
+            active.subscribers -= 1
+            if active.subscribers <= 0 and not active.future.done():
+                active.abort_requested = True
+                if active.task and not active.task.done():
+                    active.task.cancel()
+                if active.transfer:
+                    try:
+                        await active.transfer.abort()
+                    except Exception:
+                        pass
 
 # Кеширование токена
 _token_cache = {"token": None, "expires": 0.0}
+_token_lock = threading.Lock()
 
 def get_slskd_token() -> Optional[str]:
     """Получает JWT-токен для авторизации в slskd."""
@@ -226,19 +460,25 @@ def get_slskd_token() -> Optional[str]:
     if not SLSKD_URL or not SLSKD_USER or not SLSKD_PASS:
         return None
         
-    if _token_cache["token"] and time.time() < _token_cache["expires"] - 60:
-        return _token_cache["token"]
-        
-    try:
-        url = f"{SLSKD_URL}/api/v0/session"
-        resp = httpx.post(url, json={"username": SLSKD_USER, "password": SLSKD_PASS}, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            _token_cache["token"] = data["token"]
-            _token_cache["expires"] = data["expires"]
-            return data["token"]
-    except Exception as e:
-        print(f"[!] Soulseek: Ошибка авторизации slskd: {e}")
+    with _token_lock:
+        if _token_cache["token"] and time.time() < _token_cache["expires"] - 60:
+            return _token_cache["token"]
+            
+        try:
+            url = f"{SLSKD_URL}/api/v0/session"
+            resp = httpx.post(url, json={"username": SLSKD_USER, "password": SLSKD_PASS}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                _token_cache["token"] = data["token"]
+                exp = data.get("expires", 0.0)
+                try:
+                    exp_val = float(exp)
+                except (ValueError, TypeError):
+                    exp_val = time.time() + 3600.0
+                _token_cache["expires"] = exp_val
+                return data["token"]
+        except Exception as e:
+            print(f"[!] Soulseek: Ошибка авторизации slskd: {e}")
     return None
 
 def parse_slskd_quality(
@@ -555,6 +795,7 @@ def download_soulseek_track(
     """
     Скачивает файл из Soulseek (через встроенный клиент или slskd) и копирует в целевую папку.
     При необходимости транскодирует FLAC в честный MP3 320 kbps CBR.
+    Безопасен при одновременном скачивании в несколько параллельных потоков.
     """
     file_name = Path(filename.replace("\\", "/")).name
     dest_dir = Path(dest_dir)
@@ -567,28 +808,80 @@ def download_soulseek_track(
         downloaded = es.download(username, filename, timeout=120.0)
         if downloaded and downloaded.exists():
             dest_path = dest_dir / file_name
-            if downloaded.resolve() != dest_path.resolve():
-                shutil.copy2(downloaded, dest_path)
 
-            if target_quality == "MP3" and dest_path.suffix.lower() == ".flac":
-                print(f"[*] Soulseek: FLAC -> MP3 320k CBR...")
-                mp3_path = dest_path.with_suffix(".mp3")
-                cmd = [
-                    "ffmpeg", "-y", "-i", str(dest_path),
-                    "-c:a", "libmp3lame", "-b:a", "320k",
-                    str(mp3_path)
-                ]
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if res.returncode == 0 and mp3_path.exists() and mp3_path.stat().st_size > 10000:
-                    if dest_path.resolve() != mp3_path.resolve():
+            try:
+                if target_quality == "MP3" and downloaded.suffix.lower() == ".flac":
+                    print(f"[*] Soulseek: FLAC -> MP3 320k CBR...")
+                    final_dest = dest_dir / dest_path.with_suffix(".mp3").name
+                    temp_mp3 = dest_dir / f".tmp_{uuid.uuid4().hex}_{final_dest.name}"
+                    cmd = [
+                        "ffmpeg", "-y", "-i", str(downloaded),
+                        "-c:a", "libmp3lame", "-b:a", "320k",
+                        str(temp_mp3)
+                    ]
+                    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode == 0 and temp_mp3.exists() and temp_mp3.stat().st_size > 10000:
                         try:
-                            dest_path.unlink()
+                            temp_mp3.replace(final_dest)
                         except Exception:
-                            pass
-                    dest_path = mp3_path
+                            if final_dest.exists() and final_dest.stat().st_size > 10000:
+                                temp_mp3.unlink(missing_ok=True)
+                            else:
+                                try:
+                                    shutil.copy2(temp_mp3, final_dest)
+                                    temp_mp3.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                        dest_path = final_dest
+                    else:
+                        if temp_mp3.exists():
+                            temp_mp3.unlink(missing_ok=True)
+                        if downloaded.resolve() != dest_path.resolve():
+                            temp_copy = dest_dir / f".tmp_{uuid.uuid4().hex}_{file_name}"
+                            shutil.copy2(downloaded, temp_copy)
+                            try:
+                                temp_copy.replace(dest_path)
+                            except Exception:
+                                if dest_path.exists() and dest_path.stat().st_size > 0:
+                                    temp_copy.unlink(missing_ok=True)
+                                else:
+                                    try:
+                                        shutil.copy2(temp_copy, dest_path)
+                                        temp_copy.unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
+                else:
+                    if downloaded.resolve() != dest_path.resolve():
+                        temp_copy = dest_dir / f".tmp_{uuid.uuid4().hex}_{file_name}"
+                        shutil.copy2(downloaded, temp_copy)
+                        try:
+                            temp_copy.replace(dest_path)
+                        except Exception:
+                            if dest_path.exists() and dest_path.stat().st_size > 0:
+                                temp_copy.unlink(missing_ok=True)
+                            else:
+                                try:
+                                    shutil.copy2(temp_copy, dest_path)
+                                    temp_copy.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
 
-            print(f"[+] Soulseek: скачан {dest_path.name}")
-            return dest_path
+                print(f"[+] Soulseek: скачан {dest_path.name}")
+                return dest_path
+            finally:
+                if hasattr(es, "cleanup_staging_file"):
+                    es.cleanup_staging_file(downloaded)
+                else:
+                    try:
+                        staging_dir = getattr(es, "staging_dir", None)
+                        if staging_dir and downloaded.is_relative_to(staging_dir):
+                            downloaded.unlink(missing_ok=True)
+                            try:
+                                downloaded.parent.rmdir()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
     # 2. Резерв: внешний slskd HTTP API
     token = get_slskd_token()
@@ -680,21 +973,45 @@ def download_soulseek_track(
             if potential_file.exists():
                 dest_path = dest_dir / file_name
                 if potential_file.resolve() != dest_path.resolve():
-                    shutil.copy2(potential_file, dest_path)
+                    temp_copy = dest_dir / f".tmp_{uuid.uuid4().hex}_{file_name}"
+                    shutil.copy2(potential_file, temp_copy)
+                    try:
+                        temp_copy.replace(dest_path)
+                    except Exception:
+                        if dest_path.exists() and dest_path.stat().st_size > 0:
+                            temp_copy.unlink(missing_ok=True)
+                        else:
+                            try:
+                                shutil.copy2(temp_copy, dest_path)
+                                temp_copy.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                 
                 if target_quality == "MP3" and dest_path.suffix.lower() == ".flac":
                     print(f"[*] Soulseek: Транскодирование Lossless исходника в честный MP3 320 kbps (LAME CBR)...")
                     mp3_path = dest_path.with_suffix(".mp3")
+                    temp_mp3 = dest_dir / f".tmp_{uuid.uuid4().hex}_{mp3_path.name}"
                     cmd = [
                         "ffmpeg", "-y", "-i", str(dest_path),
                         "-c:a", "libmp3lame", "-b:a", "320k",
-                        str(mp3_path)
+                        str(temp_mp3)
                     ]
                     res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    if res.returncode == 0 and mp3_path.exists() and mp3_path.stat().st_size > 10000:
+                    if res.returncode == 0 and temp_mp3.exists() and temp_mp3.stat().st_size > 10000:
+                        try:
+                            temp_mp3.replace(mp3_path)
+                        except Exception:
+                            if mp3_path.exists() and mp3_path.stat().st_size > 10000:
+                                temp_mp3.unlink(missing_ok=True)
+                            else:
+                                try:
+                                    shutil.copy2(temp_mp3, mp3_path)
+                                    temp_mp3.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
                         if dest_path.resolve() != mp3_path.resolve():
                             try:
-                                dest_path.unlink()
+                                dest_path.unlink(missing_ok=True)
                             except Exception:
                                 pass
                         dest_path = mp3_path
@@ -706,21 +1023,45 @@ def download_soulseek_track(
                 if found_file.is_file():
                     dest_path = dest_dir / file_name
                     if found_file.resolve() != dest_path.resolve():
-                        shutil.copy2(found_file, dest_path)
-                        
+                        temp_copy = dest_dir / f".tmp_{uuid.uuid4().hex}_{file_name}"
+                        shutil.copy2(found_file, temp_copy)
+                        try:
+                            temp_copy.replace(dest_path)
+                        except Exception:
+                            if dest_path.exists() and dest_path.stat().st_size > 0:
+                                temp_copy.unlink(missing_ok=True)
+                            else:
+                                try:
+                                    shutil.copy2(temp_copy, dest_path)
+                                    temp_copy.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                            
                     if target_quality == "MP3" and dest_path.suffix.lower() == ".flac":
                         print(f"[*] Soulseek: Транскодирование Lossless исходника в честный MP3 320 kbps (LAME CBR)...")
                         mp3_path = dest_path.with_suffix(".mp3")
+                        temp_mp3 = dest_dir / f".tmp_{uuid.uuid4().hex}_{mp3_path.name}"
                         cmd = [
                             "ffmpeg", "-y", "-i", str(dest_path),
                             "-c:a", "libmp3lame", "-b:a", "320k",
-                            str(mp3_path)
+                            str(temp_mp3)
                         ]
                         res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        if res.returncode == 0 and mp3_path.exists() and mp3_path.stat().st_size > 10000:
+                        if res.returncode == 0 and temp_mp3.exists() and temp_mp3.stat().st_size > 10000:
+                            try:
+                                temp_mp3.replace(mp3_path)
+                            except Exception:
+                                if mp3_path.exists() and mp3_path.stat().st_size > 10000:
+                                    temp_mp3.unlink(missing_ok=True)
+                                else:
+                                    try:
+                                        shutil.copy2(temp_mp3, mp3_path)
+                                        temp_mp3.unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
                             if dest_path.resolve() != mp3_path.resolve():
                                 try:
-                                    dest_path.unlink()
+                                    dest_path.unlink(missing_ok=True)
                                 except Exception:
                                     pass
                             dest_path = mp3_path

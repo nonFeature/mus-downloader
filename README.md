@@ -70,6 +70,22 @@ uv run main.py "MGMT - Kids"
 - `query`: The URL (Spotify, Apple Music, Deezer, etc.) or search query.
 - `-q`, `--quality`: Target quality format (`FLAC` or `MP3`). Default is `FLAC`.
 
+### Telegram Bot Interface
+
+You can also run the interactive Telegram Bot:
+
+```bash
+uv run python bot.py
+```
+
+Configure `BOT_TOKEN` and `ALLOWED_USERS` (whitelist of user IDs) in your `.env`. Features:
+- Neat metadata preview cards with inline buttons: `[🎵 MP3 320k]` and `[💿 FLAC Lossless]`
+- `/quality` command to set your default quality preference
+- Native Telegram audio delivery (`send_audio`) with album art thumbnail and metadata
+- Concurrent multi-threaded downloads via `asyncio`
+- Optional local Telegram Bot API server (`BOT_API_SERVER_URL`) support for files up to 2 GB
+
+
 ---
 
 <a name="русский"></a>
@@ -143,3 +159,19 @@ uv run main.py "MGMT - Kids"
 
 - `query`: Ссылка на трек (Spotify, Apple Music, Deezer и т. д.) или текстовый запрос.
 - `-q`, `--quality`: Желаемое качество скачивания (`FLAC` или `MP3`). По умолчанию `FLAC`.
+
+### Интерфейс Telegram-бота
+
+Вы можете запустить интерактивного Telegram-бота:
+
+```bash
+uv run python bot.py
+```
+
+Укажите `BOT_TOKEN` и `ALLOWED_USERS` (ID пользователей через запятую) в вашем `.env`. Возможности:
+- Карточка метаданных с инлайн-кнопками: `[🎵 MP3 320k]` и `[💿 FLAC Lossless]`
+- Команда `/quality` для настройки желаемого качества по умолчанию
+- Нативная отправка аудио в Telegram (`send_audio`) с обложкой, автором, названием и длительностью
+- Параллельное независимое скачивание в несколько потоков
+- Встроенное автоподнятие локального Bot API (`LOCAL_BOT_API=true`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` через бинарник или Docker) для снятия лимита 50 МБ и отправки файлов до 2 ГБ
+- Поддержка подключения к уже запущенному внешнему серверу Bot API (`BOT_API_SERVER_URL`)

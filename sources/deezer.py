@@ -154,7 +154,7 @@ def search_deezer_track(artist: str, title: str) -> Optional[str]:
     from sources.youtube_matcher import toks, _version_markers
     query = f"{artist} {title}"
     try:
-        r = httpx.get("https://api.deezer.com/search", params={"q": query, "limit": 10}, timeout=4.0)
+        r = httpx.get("https://api.deezer.com/search", params={"q": query, "limit": 10}, timeout=3.0)
         if r.status_code == 200:
             data = r.json().get("data", [])
             if not data:
@@ -197,5 +197,5 @@ def search_deezer_track(artist: str, title: str) -> Optional[str]:
             if best_id and best_score >= 0.5:
                 return best_id
     except Exception as e:
-        print(f"[!] Deezer: Ошибка поиска трека: {e}")
+        print(f"[!] Deezer (Search): {e}")
     return None
