@@ -115,6 +115,53 @@ def test_search_soulseek_uses_embedded_instance():
         assert "FLAC 16bit/44kHz" in results[0]["quality"]
 
 
+def test_search_soulseek_rejects_other_tracks_from_same_album_folder():
+    """
+    Проверяет, что если папка альбома называется так же, как запрашиваемый трек (напр. Big Fish Theory),
+    поиск отклоняет другие треки из этой папки (напр. '07 Yeah Right.flac') и выбирает только искомый трек ('02 Big Fish.flac').
+    """
+    mock_es = MagicMock()
+    mock_es.search.return_value = [
+        {
+            "username": "peer1",
+            "filename": "Vince Staples\\2017 - Big Fish Theory\\07 Yeah Right.flac",
+            "size": 40000000,
+            "bit_depth": 24,
+            "sample_rate": 44100,
+            "bitrate": 1750,
+            "duration": 202,
+            "has_free_slot": True,
+            "upload_speed": 1000000,
+            "queue_length": 0,
+        },
+        {
+            "username": "peer1",
+            "filename": "Vince Staples\\2017 - Big Fish Theory\\02 Big Fish.flac",
+            "size": 25000000,
+            "bit_depth": 16,
+            "sample_rate": 44100,
+            "bitrate": 950,
+            "duration": 198,
+            "has_free_slot": True,
+            "upload_speed": 1000000,
+            "queue_length": 0,
+        },
+    ]
+
+    with patch.object(EmbeddedSoulseek, "get_instance", return_value=mock_es):
+        results = search_soulseek(
+            artist="Vince Staples",
+            title="Big Fish",
+            limit=5,
+            target_quality="FLAC",
+            duration=198
+        )
+
+        assert len(results) == 1
+        assert "02 Big Fish.flac" in results[0]["slskd_filename"]
+        assert "07 Yeah Right.flac" not in results[0]["slskd_filename"]
+
+
 def test_download_soulseek_track_embedded_copies_file(tmp_path):
     mock_es = MagicMock()
     source_flac = tmp_path / "cache" / "Artist - Song.flac"

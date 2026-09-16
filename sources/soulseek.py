@@ -259,7 +259,7 @@ class EmbeddedSoulseek:
 
         return found
 
-    def download(self, username: str, filename: str, timeout: float = 120.0) -> Optional[Path]:
+    def download(self, username: str, filename: str, timeout: float = 600.0) -> Optional[Path]:
         if not self._connected.is_set() or not self.loop or not self.client:
             return None
         try:
@@ -272,7 +272,7 @@ class EmbeddedSoulseek:
             print(f"[!] Soulseek: Ошибка скачивания: {e}")
             return None
 
-    async def _run_transfer_loop(self, active: ActiveDownload):
+    async def _run_transfer_loop(self, active: ActiveDownload, timeout: float = 600.0):
         norm_key = active.key
         username = active.username
         filename = active.filename
@@ -295,9 +295,13 @@ class EmbeddedSoulseek:
 
             start_t = time.time()
             queued_start = None
+            init_start = None
             last_state = None
             last_print = 0
-            max_lifetime = 600.0
+            last_bytes = 0
+            last_progress_time = time.time()
+            stall_timeout = 30.0  # 30 секунд без прогресса при активном скачивании
+            max_lifetime = max(600.0, timeout)
 
             while time.time() - start_t < max_lifetime:
                 if active.abort_requested or active.subscribers <= 0:
@@ -322,6 +326,35 @@ class EmbeddedSoulseek:
                     last_print = time.time()
                     last_state = st
 
+                # Отслеживание прогресса и зависания при скачивании
+                if st == TransferState.State.DOWNLOADING:
+                    if cur_bytes > last_bytes:
+                        last_bytes = cur_bytes
+                        last_progress_time = time.time()
+                    elif time.time() - last_progress_time > stall_timeout:
+                        print(f"[!] Soulseek [{file_basename}]: Загрузка зависла (нет новых данных более {stall_timeout:.0f}с), отмена...")
+                        try:
+                            await transfer.abort()
+                        except Exception:
+                            pass
+                        return
+                else:
+                    last_progress_time = time.time()
+
+                # Проверка зависания на этапе инициализации
+                if st == TransferState.State.INITIALIZING:
+                    if init_start is None:
+                        init_start = time.time()
+                    elif time.time() - init_start > 30.0:
+                        print(f"[!] Soulseek [{file_basename}]: Пир {username} не отвечает на подключение более 30с, отмена...")
+                        try:
+                            await transfer.abort()
+                        except Exception:
+                            pass
+                        return
+                else:
+                    init_start = None
+
                 # Проверка очереди у пира:
                 if st == TransferState.State.QUEUED:
                     # Если пир сейчас параллельно отдает или инициализирует нам другой трек — не считаем очередь зависшей
@@ -340,8 +373,8 @@ class EmbeddedSoulseek:
                     else:
                         if queued_start is None:
                             queued_start = time.time()
-                        elif time.time() - queued_start > 15:
-                            print(f"[!] Soulseek [{file_basename}]: Очередь у пира {username} не продвигается более 15 сек, отмена...")
+                        elif time.time() - queued_start > 20.0:
+                            print(f"[!] Soulseek [{file_basename}]: Очередь у пира {username} не продвигается более 20 сек, отмена...")
                             try:
                                 await transfer.abort()
                             except Exception:
@@ -422,7 +455,7 @@ class EmbeddedSoulseek:
             self._active_downloads[norm_key] = active
             self._increment_staging_ref(staging_file)
 
-            active.task = asyncio.create_task(self._run_transfer_loop(active))
+            active.task = asyncio.create_task(self._run_transfer_loop(active, timeout=timeout))
 
         try:
             res = await asyncio.wait_for(asyncio.shield(active.future), timeout=timeout)
@@ -695,9 +728,14 @@ def search_soulseek(
     for cand in raw_candidates:
         filename = cand["filename"]
         fn_tokens = toks(filename)
+        leaf_stem = Path(filename.replace("\\", "/")).stem
+        leaf_tokens = toks(leaf_stem)
         
+        # Артист может находиться как в названии файла, так и в структуре папок
         art_overlap = len(art_tokens & fn_tokens) / max(1, len(art_tokens))
-        tit_overlap = len(tit_tokens & fn_tokens) / max(1, len(tit_tokens))
+        # Название трека ОБЯЗАНО присутствовать именно в имени аудиофайла (leaf stem),
+        # чтобы исключить скачивание соседних треков из папки одноименного альбома
+        tit_overlap = len(tit_tokens & leaf_tokens) / max(1, len(tit_tokens)) if tit_tokens else 1.0
         
         if art_overlap < 0.6 or tit_overlap < 0.6:
             rejected_names += 1
@@ -790,7 +828,8 @@ def download_soulseek_track(
     filename: str,
     size: int,
     dest_dir: Path,
-    target_quality: str = "MP3"
+    target_quality: str = "MP3",
+    timeout: float = 600.0,
 ) -> Optional[Path]:
     """
     Скачивает файл из Soulseek (через встроенный клиент или slskd) и копирует в целевую папку.
@@ -805,7 +844,7 @@ def download_soulseek_track(
     es = EmbeddedSoulseek.get_instance()
     if es:
         print(f"[*] Soulseek: скачивание '{file_name}' ({username})...")
-        downloaded = es.download(username, filename, timeout=120.0)
+        downloaded = es.download(username, filename, timeout=timeout)
         if downloaded and downloaded.exists():
             dest_path = dest_dir / file_name
 
