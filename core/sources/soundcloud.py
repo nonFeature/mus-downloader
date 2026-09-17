@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional
 import yt_dlp
 
+from .ytdlp_opts import js_runtime_opts
+
 def _clean_filename(name: str) -> str:
     """Удаляет запрещенные символы для создания безопасного имени файла."""
     clean = re.sub(r'[\\/*?:"<>|]', "_", name)
@@ -53,6 +55,7 @@ def download_soundcloud_track(
         'socket_timeout': 30,
         'noplaylist': True,
     }
+    ydl_opts.update(js_runtime_opts())
 
     temp_downloaded: Optional[Path] = None
     info = None

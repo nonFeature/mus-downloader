@@ -37,6 +37,14 @@ started out as a **cli tool** that was supposed to be the core for other project
 
 <div align="center"><h1>how to run?</h1></div>
 
+### 0. system requirements
+- **Python 3.10+** (uv installs it automatically if missing)
+- **ffmpeg** in `PATH` - transcoding FLAC to MP3 and building thumbnails
+- **JavaScript runtime** for YouTube: **Deno** (recommended), Node.js, Bun or QuickJS.
+  Modern `yt-dlp` needs one for full YouTube support; the project auto-detects what is installed
+  and ships the `yt-dlp-ejs` challenge solver
+- **Docker** or a `telegram-bot-api` binary - optional, only for uploading files over 50 MB via a local Bot API server
+
 ### 1. setup
 ```bash
 # clone and enter

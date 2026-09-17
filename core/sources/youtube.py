@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 import yt_dlp
 from .youtube_matcher import find_best_youtube_match
+from .ytdlp_opts import js_runtime_opts
 
 YOUTUBE_CLIENTS = ["web_embedded", None, "ios", "tv", "android_vr"]
 
@@ -230,6 +231,7 @@ def download_youtube_track(
         'socket_timeout': 30,
         'noplaylist': True,
     }
+    ydl_opts.update(js_runtime_opts())
 
     temp_downloaded: Optional[Path] = None
     try:
