@@ -29,9 +29,16 @@ dev = [
     "ruff>=0.1.0",
 ]
 
+[project.scripts]
+bot = "bot.bot:run"
+dl = "cli.main:main"
+
 [tool.uv]
 managed = true
-package = false
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["bot", "cli", "core"]
 
 [dependency-groups]
 dev = [

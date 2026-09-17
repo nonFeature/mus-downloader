@@ -1,23 +1,58 @@
 import re
+import sys
 from pathlib import Path
 from typing import Optional, Callable
 
 import config
-import metadata
-import tagger
-from sources.doh_resolver import setup_doh_fallback
+
+# Ядро скачивателя: metadata/tagger/sources живут внутри пакета core.
+from . import metadata, tagger
+from . import sources as _sources
+from .sources.doh_resolver import setup_doh_fallback
 
 # Включаем автоматический DoH-фолбек при сбоях локального DNS
 setup_doh_fallback()
-from sources import (
+from .sources import (
     download_deezer_track,
     search_deezer_track,
     search_soulseek,
     download_soulseek_track,
     download_youtube_track,
     download_fallback_track,
-    download_soundcloud_track
+    download_soundcloud_track,
+    deezer,
+    soulseek,
+    soundcloud,
+    youtube,
+    youtube_matcher,
+    fallback,
+    doh_resolver,
 )
+
+
+def _install_legacy_aliases() -> None:
+    """
+    Совместимость со старыми путями импорта (``metadata``, ``tagger``,
+    ``sources.*``): регистрируем те же объекты модулей в sys.modules,
+    чтобы патчи и импорты из тестов продолжали указывать на те же модули.
+    """
+    for name, module in {
+        "metadata": metadata,
+        "tagger": tagger,
+        "sources": _sources,
+        "sources.deezer": deezer,
+        "sources.soulseek": soulseek,
+        "sources.soundcloud": soundcloud,
+        "sources.youtube": youtube,
+        "sources.youtube_matcher": youtube_matcher,
+        "sources.fallback": fallback,
+        "sources.doh_resolver": doh_resolver,
+    }.items():
+        sys.modules.setdefault(name, module)
+
+
+_install_legacy_aliases()
+
 
 def download_track_by_link(
     url_or_query: str,

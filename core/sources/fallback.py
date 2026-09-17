@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Optional
-from sources.youtube import download_youtube_track
-from sources.soundcloud import download_soundcloud_track
+from .youtube import download_youtube_track
+from .soundcloud import download_soundcloud_track
 
 def download_fallback_track(
     url: str,

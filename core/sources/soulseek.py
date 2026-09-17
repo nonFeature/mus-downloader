@@ -13,7 +13,7 @@ from config import (
     SLSK_USER, SLSK_PASS, SLSKD_URL, SLSKD_USER, SLSKD_PASS,
     SLSKD_DOWNLOADS_PATH, DOWNLOAD_DIR, is_soulseek_configured
 )
-from sources.youtube_matcher import toks, _version_markers, _strip_noise
+from .youtube_matcher import toks, _version_markers, _strip_noise
 
 try:
     from aioslsk.client import SoulSeekClient

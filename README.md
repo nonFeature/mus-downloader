@@ -27,8 +27,8 @@ started out as a **cli tool** that was supposed to be the core for other project
 
 <div align="center"><h1>how to use?</h1></div>
 
-1. **cli (`main.py`)** - basic terminal runner: pass a link or search query, pick `--flac` or `--mp3`, set output folder
-2. **tg bot (`bot.py`)**:
+1. **cli (`cli/main.py`)** - basic terminal runner: pass a link or search query, pick `--flac` or `--mp3`, set output folder
+2. **tg bot (`bot/bot.py`)**:
     - built on aiogram 3
     - inline metadata card with quality buttons (FLAC / MP3)
     - whitelist by user ID (`ALLOWED_USERS`)
@@ -56,16 +56,22 @@ copy `.env.example` to `.env` and fill in:
 
 ### 3. run
 
+**quick commands (installed by `uv sync`):**
+```bash
+uv run dl "https://open.spotify.com/track/..." --flac   # cli
+uv run bot                                              # telegram bot
+```
+
 **cli:**
 ```bash
-uv run main.py "https://open.spotify.com/track/..." --flac
+uv run python -m cli.main "https://open.spotify.com/track/..." --flac
 ```
 or
 ```bash
-uv run main.py "vince staples big fish" --mp3
+uv run python -m cli.main "vince staples big fish" --mp3
 ```
 
 **telegram bot:**
 ```bash
-uv run bot.py
+uv run python -m bot
 ```

@@ -27,8 +27,8 @@
 
 <div align="center"><h1>как пользоваться?</h1></div>
 
-1. **cli (`main.py`)** - простой запуск из терминала: скармливаешь ссылку или поисковый запрос, выбираешь `--flac` или `--mp3`, указываешь папку
-2. **tg bot (`bot.py`)**:
+1. **cli (`cli/main.py`)** - простой запуск из терминала: скармливаешь ссылку или поисковый запрос, выбираешь `--flac` или `--mp3`, указываешь папку
+2. **tg bot (`bot/bot.py`)**:
     - написан на aiogram 3
     - инлайн-карточка трека с кнопками выбора качества (FLAC / MP3)
     - белый список по user ID (`ALLOWED_USERS`)
@@ -56,16 +56,22 @@ uv sync
 
 ### 3. запуск
 
+**быстрые команды (ставятся `uv sync`):**
+```bash
+uv run dl "https://open.spotify.com/track/4kSCNra5VuD1ZfiwAe8bTD" --flac   # cli
+uv run bot                                                                  # tg-бот
+```
+
 **cli:**
 ```bash
-uv run main.py "https://open.spotify.com/track/4kSCNra5VuD1ZfiwAe8bTD" --flac
+uv run python -m cli.main "https://open.spotify.com/track/4kSCNra5VuD1ZfiwAe8bTD" --flac
 ```
 или
 ```bash
-uv run main.py "vince staples big fish" --mp3
+uv run python -m cli.main "vince staples big fish" --mp3
 ```
 
 **telegram bot:**
 ```bash
-uv run bot.py
+uv run python -m bot
 ```

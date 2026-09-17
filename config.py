@@ -70,6 +70,10 @@ BOT_API_SERVER_URL = os.getenv("BOT_API_SERVER_URL", "").strip().strip("'\"").rs
 BOT_TEMP_DIR = Path(os.getenv("BOT_TEMP_DIR", str(DOWNLOAD_DIR / "temp_bot")))
 BOT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# Кастомные (премиум) Telegram-эмодзи в сообщениях и кнопках.
+# Выключи (CUSTOM_EMOJI=false), если Telegram отклоняет такие сообщения.
+CUSTOM_EMOJI: bool = os.getenv("CUSTOM_EMOJI", "true").strip().strip("'\"").lower() in ("1", "true", "yes", "on")
+
 # Конфигурация локального Telegram Bot API Server
 _raw_api_id = (os.getenv("TELEGRAM_API_ID") or os.getenv("TG_API_ID", "")).strip().strip("'\"")
 TELEGRAM_API_ID: int | str = int(_raw_api_id) if _raw_api_id.isdigit() else _raw_api_id

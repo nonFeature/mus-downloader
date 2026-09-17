@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, List, Dict
 import yt_dlp
-from sources.youtube_matcher import find_best_youtube_match
+from .youtube_matcher import find_best_youtube_match
 
 YOUTUBE_CLIENTS = ["web_embedded", None, "ios", "tv", "android_vr"]
 

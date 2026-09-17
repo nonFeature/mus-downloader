@@ -275,22 +275,6 @@ def test_handle_start_command():
     asyncio.run(run())
 
 
-def test_handle_help_command():
-    """Команда /help отправляет справочную информацию."""
-    async def run():
-        mock_msg = MagicMock(spec=Message)
-        mock_msg.answer = AsyncMock()
-
-        await bot.handle_help(mock_msg)
-        mock_msg.answer.assert_awaited_once()
-        text = mock_msg.answer.call_args[0][0]
-        assert "Справка по использованию" in text
-        assert "MP3 320k" in text
-        assert "FLAC Lossless" in text
-
-    asyncio.run(run())
-
-
 def test_handle_quality_command(tmp_path):
     """Команда /quality показывает меню выбора качества."""
     async def run():
@@ -515,17 +499,32 @@ def test_prepare_thumbnail_from_url(tmp_path):
         assert thumb.stat().st_size == len(fake_img)
 
 
-def test_handle_id_command():
-    """Команда /id выводит ID пользователя."""
+def test_handle_id_command_removed_fallback():
+    """Команда /id удалена: отсутствует в модуле и в /start, а отправка /id вызывает ответ о неизвестной команде."""
     async def run():
-        mock_msg = MagicMock(spec=Message)
-        mock_msg.from_user = MagicMock()
-        mock_msg.from_user.id = 123456789
-        mock_msg.answer = AsyncMock()
+        # 1. Проверяем отсутствие функции handle_id в bot.py
+        assert not hasattr(bot, "handle_id"), "bot.py не должен экспортировать handle_id"
 
-        await bot.handle_id(mock_msg)
-        mock_msg.answer.assert_awaited_once()
-        assert "123456789" in mock_msg.answer.call_args[0][0]
+        # 2. Проверяем отсутствие /id в приветственном сообщении handle_start
+        mock_msg_start = MagicMock(spec=Message)
+        mock_msg_start.answer = AsyncMock()
+        await bot.handle_start(mock_msg_start)
+        start_text = mock_msg_start.answer.call_args[0][0]
+        assert "/id" not in start_text, "/id не должен присутствовать в приветственном сообщении /start"
+
+        # 3. Проверяем fallback: входящий текст '/id' перенаправляется на handle_track_query и возвращает отказ
+        mock_msg_query = MagicMock(spec=Message)
+        mock_msg_query.text = "/id"
+        mock_msg_query.from_user = MagicMock()
+        mock_msg_query.from_user.id = 123456789
+        mock_msg_query.answer = AsyncMock()
+        mock_bot = MagicMock(spec=bot.Bot)
+
+        await bot.handle_track_query(mock_msg_query, mock_bot)
+        mock_msg_query.answer.assert_awaited_once()
+        answer_text = mock_msg_query.answer.call_args[0][0]
+        assert "Неизвестная команда" in answer_text
+        assert "123456789" not in answer_text
 
     asyncio.run(run())
 
@@ -1137,8 +1136,12 @@ def test_main_integration_with_local_bot_api():
         mock_dp.message = MagicMock()
         mock_dp.callback_query = MagicMock()
 
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = True
+
         with patch.object(config, "BOT_TOKEN", "123:ABC"), \
              patch.object(config, "is_local_bot_api_enabled", return_value=True), \
+             patch("bot.SingleInstanceLock", return_value=mock_lock), \
              patch("bot.LocalBotAPIManager", return_value=mock_manager), \
              patch("bot.create_bot", return_value=mock_bot) as mock_create_bot, \
              patch("bot.Dispatcher", return_value=mock_dp):
@@ -1166,9 +1169,13 @@ def test_main_with_local_bot_api_disabled():
         mock_dp.message = MagicMock()
         mock_dp.callback_query = MagicMock()
 
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = True
+
         with patch.object(config, "BOT_TOKEN", "123:ABC"), \
              patch.object(config, "BOT_API_SERVER_URL", ""), \
              patch.object(config, "is_local_bot_api_enabled", return_value=False), \
+             patch("bot.SingleInstanceLock", return_value=mock_lock), \
              patch("bot.LocalBotAPIManager") as mock_manager_cls, \
              patch("bot.create_bot", return_value=mock_bot) as mock_create_bot, \
              patch("bot.Dispatcher", return_value=mock_dp):
@@ -1384,9 +1391,13 @@ def test_main_local_bot_api_start_failure_falls_back_to_cloud():
         mock_dp.message = MagicMock()
         mock_dp.callback_query = MagicMock()
 
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = True
+
         with patch.object(config, "BOT_TOKEN", "123:ABC"), \
              patch.object(config, "BOT_API_SERVER_URL", "http://stale-old-url:8081"), \
              patch.object(config, "is_local_bot_api_enabled", return_value=True), \
+             patch("bot.SingleInstanceLock", return_value=mock_lock), \
              patch("bot.LocalBotAPIManager", return_value=mock_manager), \
              patch("bot.create_bot", return_value=mock_bot) as mock_create_bot, \
              patch("bot.Dispatcher", return_value=mock_dp):
@@ -1409,8 +1420,12 @@ def test_main_stop_called_even_if_bot_creation_fails():
         mock_manager.start = AsyncMock(return_value="http://127.0.0.1:8081")
         mock_manager.stop = AsyncMock()
 
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = True
+
         with patch.object(config, "BOT_TOKEN", "123:ABC"), \
              patch.object(config, "is_local_bot_api_enabled", return_value=True), \
+             patch("bot.SingleInstanceLock", return_value=mock_lock), \
              patch("bot.LocalBotAPIManager", return_value=mock_manager), \
              patch("bot.create_bot", side_effect=RuntimeError("Bot creation failed")):
 
