@@ -1,4 +1,4 @@
-<div align="center"><b>[EN]</b> <a href="README_ru.md">[RU]</a></div>
+<div align="center"><b>[EN]</b> <a href="ru.md">[RU]</a></div>
 
 <h1>mus-downloader <img align="right" height="40" alt="mus-downloader" src="icon.webp"></h1>
 
