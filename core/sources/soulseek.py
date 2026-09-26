@@ -8,7 +8,7 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from config import (
     SLSK_USER, SLSK_PASS, SLSKD_URL, SLSKD_USER, SLSKD_PASS,
     SLSKD_DOWNLOADS_PATH, DOWNLOAD_DIR, is_soulseek_configured
@@ -830,6 +830,7 @@ def download_soulseek_track(
     dest_dir: Path,
     target_quality: str = "MP3",
     timeout: float = 600.0,
+    status_callback: Optional[Callable[[str], None]] = None,
 ) -> Optional[Path]:
     """
     Скачивает файл из Soulseek (через встроенный клиент или slskd) и копирует в целевую папку.
@@ -840,17 +841,25 @@ def download_soulseek_track(
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    def _notify(msg: str) -> None:
+        print(msg)
+        if status_callback:
+            try:
+                status_callback(msg)
+            except Exception:
+                pass
+
     # 1. Приоритет: встроенный Soulseek клиент
     es = EmbeddedSoulseek.get_instance()
     if es:
-        print(f"[*] Soulseek: скачивание '{file_name}' ({username})...")
+        _notify(f"[*] Soulseek: скачивание '{file_name}' ({username})...")
         downloaded = es.download(username, filename, timeout=timeout)
         if downloaded and downloaded.exists():
             dest_path = dest_dir / file_name
 
             try:
                 if target_quality == "MP3" and downloaded.suffix.lower() == ".flac":
-                    print(f"[*] Soulseek: FLAC -> MP3 320k CBR...")
+                    _notify(f"[*] Soulseek: Конвертация FLAC -> MP3 320k CBR...")
                     final_dest = dest_dir / dest_path.with_suffix(".mp3").name
                     temp_mp3 = dest_dir / f".tmp_{uuid.uuid4().hex}_{final_dest.name}"
                     cmd = [
@@ -932,7 +941,7 @@ def download_soulseek_track(
     headers = {"Authorization": f"Bearer {token}"}
     queue_item = {"filename": filename, "size": size}
     
-    print(f"[*] Soulseek: скачивание '{file_name}' ({username}, slskd)...")
+    _notify(f"[*] Soulseek: скачивание '{file_name}' ({username}, slskd)...")
     
     try:
         resp = httpx.post(

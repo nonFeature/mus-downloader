@@ -74,6 +74,7 @@ DOMAIN_EMOJI: dict[str, tuple[Optional[str], str]] = {
     "search":   (_ID_SEARCH,     "🔍"),
     "queue":    (_ID_HOURGLASS,  "⏳"),
     "settings": (_ID_GEAR,       "⚙️"),
+    "refresh":  (_ID_REFRESH,    "🔄"),
     # status / feedback
     "check":    (_ID_CHECK,      "✅"),
     "cross":    (_ID_CROSS,      "❌"),

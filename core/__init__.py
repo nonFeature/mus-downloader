@@ -138,13 +138,15 @@ def download_track_by_link(
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
             for idx, cand in enumerate(candidates, 1):
                 if idx > 1:
-                    report(f"[*] Soulseek: резервный пир #{idx} ({cand['slskd_username']})...")
+                    report(f"[*] Soulseek: подключение к резервному пиру #{idx} ({cand['slskd_username']})...")
+                report(f"[*] Soulseek: скачивание FLAC ({cand['slskd_username']})...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
                     cand["slskd_size"],
                     target_dir,
-                    target_quality="FLAC"
+                    target_quality="FLAC",
+                    status_callback=report,
                 )
                 if file_path:
                     source_used = f"Soulseek ({cand['quality']})"
@@ -154,7 +156,7 @@ def download_track_by_link(
 
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
         if not file_path and deezer_id:
-            report("[*] Deezer: проверка и скачивание FLAC...")
+            report("[*] Deezer: скачивание FLAC...")
             file_path = download_deezer_track(deezer_id, target_dir, target_quality="FLAC", artist=artist, title=title)
             if file_path and file_path.suffix.lower() == ".flac":
                 source_used = "Deezer FLAC"
@@ -194,7 +196,8 @@ def download_track_by_link(
                 album=album,
                 isrc=isrc,
                 direct_url=url_or_query,
-                explicit=explicit
+                explicit=explicit,
+                status_callback=report,
             )
             if file_path:
                 source_used = "YouTube Music"
@@ -212,13 +215,15 @@ def download_track_by_link(
             candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
             for idx, cand in enumerate(candidates, 1):
                 if idx > 1:
-                    report(f"[*] Soulseek: резервный пир #{idx} ({cand['slskd_username']})...")
+                    report(f"[*] Soulseek: подключение к резервному пиру #{idx} ({cand['slskd_username']})...")
+                report(f"[*] Soulseek: скачивание MP3 ({cand['slskd_username']})...")
                 file_path = download_soulseek_track(
                     cand["slskd_username"],
                     cand["slskd_filename"],
                     cand["slskd_size"],
                     target_dir,
-                    target_quality="MP3"
+                    target_quality="MP3",
+                    status_callback=report,
                 )
                 if file_path:
                     source_used = f"Soulseek ({cand['quality']})"
@@ -228,7 +233,7 @@ def download_track_by_link(
 
         # Шаг MP3-3: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
         if not file_path:
-            report("[*] YouTube Music: поиск и скачивание...")
+            report("[*] YouTube Music: поиск трека...")
             direct_yt = meta.get("youtube_music_url")
 
             file_path = download_youtube_track(
@@ -239,7 +244,8 @@ def download_track_by_link(
                 album=album,
                 isrc=isrc,
                 direct_url=direct_yt,
-                explicit=explicit
+                explicit=explicit,
+                status_callback=report,
             )
             if file_path:
                 source_used = "YouTube Music"

@@ -75,7 +75,8 @@ class _NotifyResult:
 
 def prettify_stage(status: str, lang: str = "ru") -> str:
     """
-    Преобразует технические сообщения логов скачивания в понятные и красивые статусы этапов.
+    Преобразует технические сообщения логов скачивания в понятные и красивые статусы этапов
+    с поддержкой кастомных Telegram Premium эмодзи.
     """
     cleaned = re.sub(r"^\s*\[[\*!+-]\]\s*", "", status).strip()
     if not cleaned:
@@ -86,58 +87,78 @@ def prettify_stage(status: str, lang: str = "ru") -> str:
         return ""
 
     low = cleaned.lower()
-    if lang == "en":
-        if "тегирование" in low or "tagging" in low:
-            return "<i>🏷️ Embedding metadata and cover art...</i>"
-        if "soundcloud" in low and ("lossless" in low or "проверка" in low or "check" in low):
-            return "<i>🔍 SoundCloud: checking Lossless original...</i>"
-        if "soundcloud" in low and ("скачивание" in low or "download" in low):
-            return "<i>⬇️ SoundCloud: downloading original...</i>"
-        if "soulseek" in low and "flac" in low:
-            return "<i>🔍 Soulseek: searching FLAC...</i>"
-        if "soulseek" in low and ("резервный" in low or "peer" in low):
-            return "<i>🔍 Soulseek: trying alternative peer...</i>"
-        if "soulseek" in low and ("недоступны" in low or "unavailable" in low):
-            return "<i>⚠️ Soulseek: peers unavailable...</i>"
-        if "soulseek" in low and "mp3" in low:
-            return "<i>🔍 Soulseek: searching MP3...</i>"
-        if "deezer" in low and "flac" in low:
-            return "<i>⬇️ Deezer: downloading FLAC...</i>"
-        if "deezer" in low and "mp3" in low:
-            return "<i>⬇️ Deezer: downloading MP3 320k...</i>"
-        if "flac не найден" in low or "flac not found" in low:
-            return "<i>ℹ️ FLAC not found, trying MP3 320k...</i>"
-        if "youtube" in low:
-            return "<i>⬇️ YouTube Music: downloading track...</i>"
-        if "yt-dlp" in low or "фолбек" in low or "fallback" in low:
-            return "<i>⬇️ Fallback source: downloading...</i>"
-        return f"<i>{escape_html(cleaned)}</i>"
-    else:
-        if "тегирование" in low or "tagging" in low:
-            return "<i>🏷️ Вшиваю метаданные и обложку...</i>"
-        if "soundcloud" in low and ("lossless" in low or "проверка" in low):
-            return "<i>🔍 SoundCloud: проверка Lossless оригинала...</i>"
-        if "soundcloud" in low and "скачивание" in low:
-            return "<i>⬇️ SoundCloud: скачивание оригинала...</i>"
-        if "soulseek" in low and "flac" in low:
-            return "<i>🔍 Soulseek: поиск FLAC...</i>"
-        if "soulseek" in low and ("резервный" in low or "пир" in low):
-            return "<i>🔍 Soulseek: подключение к резервному пиру...</i>"
-        if "soulseek" in low and "недоступны" in low:
-            return "<i>⚠️ Soulseek: кандидаты недоступны...</i>"
-        if "soulseek" in low and "mp3" in low:
-            return "<i>🔍 Soulseek: поиск MP3...</i>"
-        if "deezer" in low and "flac" in low:
-            return "<i>⬇️ Deezer: скачивание FLAC...</i>"
-        if "deezer" in low and "mp3" in low:
-            return "<i>⬇️ Deezer: скачивание MP3 320k...</i>"
-        if "flac не найден" in low or "flac not found" in low:
-            return "<i>ℹ️ FLAC не найден, ищу в MP3 320k...</i>"
-        if "youtube" in low:
-            return "<i>⬇️ YouTube Music: скачивание трека...</i>"
-        if "yt-dlp" in low or "фолбек" in low:
-            return "<i>⬇️ Резервный источник: скачивание...</i>"
-        return f"<i>{escape_html(cleaned)}</i>"
+    emj = emoji_kwargs()
+    icon_search = emj.get("emoji_search", "🔍")
+    icon_dl = emj.get("emoji_download", "⬇️")
+    icon_gear = emj.get("emoji_settings", "⚙️")
+    icon_warn = emj.get("emoji_warning", "⚠️")
+    icon_info = emj.get("emoji_help", "ℹ️")
+    icon_refresh = emj.get("emoji_refresh", "🔄")
+
+    # 1. Завершающие этапы обработки
+    if "тегирование" in low or "tagging" in low:
+        msg = "Вшиваю метаданные и обложку..." if lang == "ru" else "Embedding metadata and cover art..."
+        return f"<i>{icon_gear} {msg}</i>"
+
+    if "конвертаци" in low or "flac -> mp3" in low or "transcod" in low:
+        msg = "Конвертация в MP3 320k CBR..." if lang == "ru" else "Transcoding to MP3 320k CBR..."
+        return f"<i>{icon_refresh} {msg}</i>"
+
+    # 2. Недоступность кандидатов / предупреждения
+    if "недоступны" in low or "unavailable" in low or "failed" in low:
+        msg = "Кандидаты недоступны, переключаю источник..." if lang == "ru" else "Sources unavailable, switching..."
+        return f"<i>{icon_warn} {msg}</i>"
+
+    if "flac не найден" in low or "flac not found" in low:
+        msg = "FLAC не найден, ищу в MP3 320k..." if lang == "ru" else "FLAC not found, trying MP3 320k..."
+        return f"<i>{icon_info} {msg}</i>"
+
+    # 3. Скачивание (когда файл найден и идёт загрузка)
+    if "скачивание" in low or "downloading" in low or "скачиваю" in low:
+        if "soulseek" in low:
+            if "flac" in low:
+                msg = "Soulseek: скачивание FLAC..." if lang == "ru" else "Soulseek: downloading FLAC..."
+            elif "mp3" in low:
+                msg = "Soulseek: скачивание MP3..." if lang == "ru" else "Soulseek: downloading MP3..."
+            else:
+                msg = "Soulseek: скачивание трека..." if lang == "ru" else "Soulseek: downloading track..."
+        elif "deezer" in low:
+            if "flac" in low:
+                msg = "Deezer: скачивание FLAC..." if lang == "ru" else "Deezer: downloading FLAC..."
+            else:
+                msg = "Deezer: скачивание MP3 320k..." if lang == "ru" else "Deezer: downloading MP3 320k..."
+        elif "youtube" in low:
+            msg = "YouTube Music: скачивание трека..." if lang == "ru" else "YouTube Music: downloading track..."
+        elif "soundcloud" in low:
+            msg = "SoundCloud: скачивание оригинала..." if lang == "ru" else "SoundCloud: downloading original..."
+        elif "yt-dlp" in low or "фолбек" in low or "fallback" in low:
+            msg = "Резервный источник: скачивание..." if lang == "ru" else "Fallback source: downloading..."
+        else:
+            msg = f"Скачивание: {escape_html(cleaned)}" if lang == "ru" else f"Downloading: {escape_html(cleaned)}"
+        return f"<i>{icon_dl} {msg}</i>"
+
+    # 4. Поиск (когда идёт поиск источников / пиров)
+    if "поиск" in low or "search" in low or "проверка" in low or "checking" in low or "ищу" in low or "резервный" in low or "пир" in low:
+        if "soulseek" in low:
+            if "резервный" in low or "пир" in low or "peer" in low:
+                msg = "Soulseek: подключение к резервному пиру..." if lang == "ru" else "Soulseek: trying alternative peer..."
+            elif "flac" in low:
+                msg = "Soulseek: поиск FLAC..." if lang == "ru" else "Soulseek: searching FLAC..."
+            elif "mp3" in low:
+                msg = "Soulseek: поиск MP3..." if lang == "ru" else "Soulseek: searching MP3..."
+            else:
+                msg = "Soulseek: поиск трека..." if lang == "ru" else "Soulseek: searching track..."
+        elif "youtube" in low:
+            msg = "YouTube Music: поиск трека..." if lang == "ru" else "YouTube Music: searching track..."
+        elif "soundcloud" in low:
+            msg = "SoundCloud: проверка Lossless оригинала..." if lang == "ru" else "SoundCloud: checking Lossless original..."
+        elif "deezer" in low:
+            msg = "Deezer: поиск трека..." if lang == "ru" else "Deezer: checking track..."
+        else:
+            msg = f"Поиск: {escape_html(cleaned)}" if lang == "ru" else f"Searching: {escape_html(cleaned)}"
+        return f"<i>{icon_search} {msg}</i>"
+
+    return f"<i>{escape_html(cleaned)}</i>"
 
 
 def format_status_text(status: str, lang: str = "ru", header: str = "", **kwargs: Any) -> str:
@@ -153,14 +174,16 @@ def format_status_text(status: str, lang: str = "ru", header: str = "", **kwargs
     if status in lang_dict:
         raw = lang_dict[status]
         if header and status == "status.searching_sources":
-            body = "<i>🔍 Ищу, откуда скачать...</i>" if lang == "ru" else "<i>🔍 Checking sources...</i>"
+            icon_s = format_args.get("emoji_search", "🔍")
+            body = f"<i>{icon_s} Ищу, откуда скачать...</i>" if lang == "ru" else f"<i>{icon_s} Checking sources...</i>"
             return f"{header}\n\n{body}"
         if header and status == "status.uploading":
-            emj = emoji_kwargs()
-            body = f"{emj['emoji_upload']} Отправляю в Telegram..." if lang == "ru" else f"{emj['emoji_upload']} Sending to Telegram..."
+            icon_u = format_args.get("emoji_upload", "🚀")
+            body = f"<i>{icon_u} Отправляю в Telegram...</i>" if lang == "ru" else f"<i>{icon_u} Sending to Telegram...</i>"
             return f"{header}\n\n{body}"
         if header and status == "status.queued":
-            body = "<i>⏳ Стою в очереди, жду свободный слот...</i>" if lang == "ru" else "<i>⏳ Waiting for a free slot...</i>"
+            icon_q = format_args.get("emoji_queue", "⏳")
+            body = f"<i>{icon_q} Стою в очереди, жду свободный слот...</i>" if lang == "ru" else f"<i>{icon_q} Waiting for a free slot...</i>"
             return f"{header}\n\n{body}"
         try:
             body = raw.format(**format_args)
