@@ -843,13 +843,14 @@ async def main():
                     logger.warning(f"Ожидание готовности Bot API ({attempt}/5)...")
                     await asyncio.sleep(0.8)
 
-        if bot_user is None and api_manager:
+        if bot_user is None and (api_manager or api_url):
             logger.warning(
                 "Локальный Telegram Bot API Server не ответил на getMe. "
-                "Остановка и переключение на стандартный Telegram Cloud API..."
+                "Переключение на стандартный Telegram Cloud API..."
             )
-            await api_manager.stop()
-            api_manager = None
+            if api_manager:
+                await api_manager.stop()
+                api_manager = None
             api_url = None
             config.BOT_API_SERVER_URL = ""
             if bot and bot.session:
