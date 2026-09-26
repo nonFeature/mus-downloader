@@ -176,7 +176,7 @@ class LocalBotAPIManager:
         except Exception:
             pass
 
-        server_url = f"http://127.0.0.1:{self.port}"
+        server_url = self.api_url or f"http://127.0.0.1:{self.port}"
 
         # 1. Проверяем, запущен ли сервер уже
         if await self.check_health(server_url, timeout=1.0):
@@ -216,55 +216,12 @@ class LocalBotAPIManager:
                 logger.warning(f"Ошибка при запуске бинарного файла {bin_path}: {e}")
                 self.process = None
 
-        # 4. Если бинарный файл не найден, попытка запуска через Docker
+        # 4. Если бинарный файл не найден / не запущен:
+        # Автоподнятие контейнера Docker отключено (пользователь поднимает контейнер сам).
         if not self.process:
-            docker_bin = shutil.which("docker")
-            if docker_bin:
-                logger.info("Бинарный файл telegram-bot-api не найден, запуск через Docker...")
-                self.data_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    rm_proc = await asyncio.create_subprocess_exec(
-                        "docker", "rm", "-f", self.container_name,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await asyncio.wait_for(rm_proc.wait(), timeout=5.0)
-                except Exception:
-                    pass
-
-                docker_volume = str(self.data_dir.resolve()).replace("\\", "/")
-                docker_cmd = [
-                    "docker", "run", "-d", "--rm",
-                    "--name", self.container_name,
-                    "-p", f"{self.port}:{self.port}",
-                    "-v", f"{docker_volume}:/var/lib/telegram-bot-api",
-                    "-e", f"TELEGRAM_API_ID={self.api_id}",
-                    "-e", f"TELEGRAM_API_HASH={self.api_hash}",
-                    "-e", "TELEGRAM_LOCAL=1",
-                    "-e", f"TELEGRAM_HTTP_PORT={self.port}",
-                    "aiogram/telegram-bot-api:latest",
-                ]
-                try:
-                    dproc = await asyncio.create_subprocess_exec(
-                        *docker_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    _, stderr = await dproc.communicate()
-                    if dproc.returncode == 0:
-                        self.started_docker = True
-                        logger.info(f"Docker контейнер {self.container_name} успешно запущен.")
-                    else:
-                        err_msg = stderr.decode(errors="replace").strip() if stderr else f"код {dproc.returncode}"
-                        logger.warning(f"Ошибка запуска Docker контейнера: {err_msg}")
-                except Exception as e:
-                    logger.warning(f"Не удалось выполнить docker run: {e}")
-
-        # 5. Если не удалось запустить ни бинарник, ни Docker
-        if not self.process and not self.started_docker:
-            logger.warning(
-                "Не удалось запустить локальный Telegram Bot API Server: "
-                "бинарный файл telegram-bot-api не найден и Docker недоступен. "
+            logger.info(
+                f"Локальный Telegram Bot API Server не запущен на {server_url} "
+                "(бинарный файл не найден, автоподнятие контейнера отключено). "
                 "Переход на Telegram Cloud API."
             )
             return None

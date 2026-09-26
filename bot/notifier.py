@@ -73,6 +73,73 @@ class _NotifyResult:
         return _dummy().__await__()
 
 
+def prettify_stage(status: str, lang: str = "ru") -> str:
+    """
+    Преобразует технические сообщения логов скачивания в понятные и красивые статусы этапов.
+    """
+    cleaned = re.sub(r"^\s*\[[\*!+-]\]\s*", "", status).strip()
+    if not cleaned:
+        return ""
+
+    # Игнорируем заголовочную строку с описанием трека (она уже выведена в header)
+    if cleaned.startswith("Трек:") or cleaned.startswith("Track:"):
+        return ""
+
+    low = cleaned.lower()
+    if lang == "en":
+        if "тегирование" in low or "tagging" in low:
+            return "<i>🏷️ Embedding metadata and cover art...</i>"
+        if "soundcloud" in low and ("lossless" in low or "проверка" in low or "check" in low):
+            return "<i>🔍 SoundCloud: checking Lossless original...</i>"
+        if "soundcloud" in low and ("скачивание" in low or "download" in low):
+            return "<i>⬇️ SoundCloud: downloading original...</i>"
+        if "soulseek" in low and "flac" in low:
+            return "<i>🔍 Soulseek: searching FLAC...</i>"
+        if "soulseek" in low and ("резервный" in low or "peer" in low):
+            return "<i>🔍 Soulseek: trying alternative peer...</i>"
+        if "soulseek" in low and ("недоступны" in low or "unavailable" in low):
+            return "<i>⚠️ Soulseek: peers unavailable...</i>"
+        if "soulseek" in low and "mp3" in low:
+            return "<i>🔍 Soulseek: searching MP3...</i>"
+        if "deezer" in low and "flac" in low:
+            return "<i>⬇️ Deezer: downloading FLAC...</i>"
+        if "deezer" in low and "mp3" in low:
+            return "<i>⬇️ Deezer: downloading MP3 320k...</i>"
+        if "flac не найден" in low or "flac not found" in low:
+            return "<i>ℹ️ FLAC not found, trying MP3 320k...</i>"
+        if "youtube" in low:
+            return "<i>⬇️ YouTube Music: downloading track...</i>"
+        if "yt-dlp" in low or "фолбек" in low or "fallback" in low:
+            return "<i>⬇️ Fallback source: downloading...</i>"
+        return f"<i>{escape_html(cleaned)}</i>"
+    else:
+        if "тегирование" in low or "tagging" in low:
+            return "<i>🏷️ Вшиваю метаданные и обложку...</i>"
+        if "soundcloud" in low and ("lossless" in low or "проверка" in low):
+            return "<i>🔍 SoundCloud: проверка Lossless оригинала...</i>"
+        if "soundcloud" in low and "скачивание" in low:
+            return "<i>⬇️ SoundCloud: скачивание оригинала...</i>"
+        if "soulseek" in low and "flac" in low:
+            return "<i>🔍 Soulseek: поиск FLAC...</i>"
+        if "soulseek" in low and ("резервный" in low or "пир" in low):
+            return "<i>🔍 Soulseek: подключение к резервному пиру...</i>"
+        if "soulseek" in low and "недоступны" in low:
+            return "<i>⚠️ Soulseek: кандидаты недоступны...</i>"
+        if "soulseek" in low and "mp3" in low:
+            return "<i>🔍 Soulseek: поиск MP3...</i>"
+        if "deezer" in low and "flac" in low:
+            return "<i>⬇️ Deezer: скачивание FLAC...</i>"
+        if "deezer" in low and "mp3" in low:
+            return "<i>⬇️ Deezer: скачивание MP3 320k...</i>"
+        if "flac не найден" in low or "flac not found" in low:
+            return "<i>ℹ️ FLAC не найден, ищу в MP3 320k...</i>"
+        if "youtube" in low:
+            return "<i>⬇️ YouTube Music: скачивание трека...</i>"
+        if "yt-dlp" in low or "фолбек" in low:
+            return "<i>⬇️ Резервный источник: скачивание...</i>"
+        return f"<i>{escape_html(cleaned)}</i>"
+
+
 def format_status_text(status: str, lang: str = "ru", header: str = "", **kwargs: Any) -> str:
     """Форматирует статус по ключу локализации или исходному тексту.
 
@@ -85,6 +152,16 @@ def format_status_text(status: str, lang: str = "ru", header: str = "", **kwargs
 
     if status in lang_dict:
         raw = lang_dict[status]
+        if header and status == "status.searching_sources":
+            body = "<i>🔍 Ищу, откуда скачать...</i>" if lang == "ru" else "<i>🔍 Checking sources...</i>"
+            return f"{header}\n\n{body}"
+        if header and status == "status.uploading":
+            emj = emoji_kwargs()
+            body = f"{emj['emoji_upload']} Отправляю в Telegram..." if lang == "ru" else f"{emj['emoji_upload']} Sending to Telegram..."
+            return f"{header}\n\n{body}"
+        if header and status == "status.queued":
+            body = "<i>⏳ Стою в очереди, жду свободный слот...</i>" if lang == "ru" else "<i>⏳ Waiting for a free slot...</i>"
+            return f"{header}\n\n{body}"
         try:
             body = raw.format(**format_args)
         except Exception:
@@ -96,12 +173,12 @@ def format_status_text(status: str, lang: str = "ru", header: str = "", **kwargs
                 text = text.format(**format_args)
             except Exception:
                 text = status
-        cleaned = re.sub(r"^\s*\[[\*!+-]\]\s*", "", text).strip()
-        if not cleaned:
-            return ""
-        body = f"<i>{escape_html(cleaned)}</i>"
+        stage_text = prettify_stage(text, lang=lang)
+        if not stage_text:
+            return header or ""
+        body = stage_text
 
-    if header:
+    if header and header not in body:
         return f"{header}\n\n{body}"
     return body
 
@@ -165,9 +242,11 @@ class StatusNotifier:
         self._last_sent_text = ""
         self._pending_text: Optional[str] = None
         self._timer_handle: Optional[asyncio.TimerHandle] = None
-        # _loop is resolved lazily on first in-loop call to avoid issues when
-        # StatusNotifier is constructed outside an event loop (e.g., in sync tests).
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Захватываем текущий loop, если StatusNotifier создан внутри асинхронной корутины
+        try:
+            self._loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
         self._closed = False
         self.closed = False
         self._is_updating = False

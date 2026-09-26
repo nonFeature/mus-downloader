@@ -15,6 +15,7 @@ Telegram-бот оболочка для mus-downloader.
 """
 
 import asyncio
+import functools
 import html
 import json
 import logging
@@ -46,10 +47,10 @@ from aiogram.types import (
 import config
 import core
 from core import metadata, tagger
-from .emoji import emoji_kwargs, set_custom_emoji_enabled
-from .i18n import detect_lang, t
+from .emoji import emoji_kwargs, set_custom_emoji_enabled, strip_html
+from .i18n import detect_lang, t, t_plain
 from .local_bot_api import LocalBotAPIManager
-from .notifier import StatusNotifier, escape_html
+from .notifier import StatusNotifier, escape_html, format_status_text
 from .process_lock import SingleInstanceLock
 from .storage import QueryStore, UserSettings
 from .keyboards import build_quality_keyboard, build_quality_settings_keyboard
@@ -84,7 +85,23 @@ __all__ = [
     "metadata",
     "Bot",
     "Dispatcher",
+    "strip_html",
+    "t_plain",
 ]
+
+# Wrap CallbackQuery.answer to guarantee that no raw HTML tags (e.g. <tg-emoji>)
+# are ever displayed in Telegram callback query notification toasts or alerts.
+_orig_callback_answer = CallbackQuery.answer
+
+
+@functools.wraps(_orig_callback_answer)
+async def _safe_callback_answer(self: CallbackQuery, text: Optional[str] = None, **kwargs: Any) -> bool:
+    if text is not None:
+        text = strip_html(text)
+    return await _orig_callback_answer(self, text=text, **kwargs)
+
+
+CallbackQuery.answer = _safe_callback_answer  # type: ignore[assignment]
 
 # Настройка логирования
 logging.basicConfig(
@@ -322,6 +339,7 @@ def resolve_lang(event: Any) -> str:
 user_settings = UserSettings(config.DOWNLOAD_DIR / ".bot_user_settings.json")
 query_store = QueryStore(max_items=1000)
 active_download_tasks: Set[asyncio.Task] = set()
+active_download_keys: Set[str] = set()
 download_semaphore = asyncio.Semaphore(3)  # max 3 concurrent downloads
 router = Router()
 
@@ -359,18 +377,18 @@ async def handle_preference_callback(callback: CallbackQuery):
     user_id = _get_user_id(callback)
     parts = callback.data.split(":", 1)
     if len(parts) != 2:
-        await callback.answer(t("error.invalid_request", lang), show_alert=True)
+        await callback.answer(t_plain("error.invalid_request", lang), show_alert=True)
         return
     new_pref = parts[1]
     if new_pref not in ["ASK", "MP3", "FLAC"]:
-        await callback.answer(t("error.invalid_quality", lang), show_alert=True)
+        await callback.answer(t_plain("error.invalid_quality", lang), show_alert=True)
         return
 
     user_settings.set_quality(user_id, new_pref)
 
     pref_key = {"ASK": "pref.ask", "MP3": "pref.mp3", "FLAC": "pref.flac"}.get(new_pref, "pref.ask")
     pref_label = t(pref_key, lang)
-    await callback.answer(t("settings.quality_saved_alert", lang, pref=pref_label))
+    await callback.answer(t_plain("settings.quality_saved_alert", lang, pref=pref_label))
 
     text = t("settings.quality_saved", lang, current_pref=pref_label)
     try:
@@ -391,6 +409,7 @@ async def run_download_and_send(
     meta: Dict[str, Any],
     status_msg: Message,
     lang: str = "ru",
+    dedup_keys: Optional[Set[str]] = None,
 ):
     """
     Фоновый рабочий процесс скачивания трека и отправки в Telegram.
@@ -532,6 +551,8 @@ async def run_download_and_send(
             pass
     finally:
         notifier.close()
+        if dedup_keys:
+            active_download_keys.difference_update(dedup_keys)
         # Гарантированная очистка временной папки этого скачивания
         shutil.rmtree(task_dir, ignore_errors=True)
 
@@ -542,24 +563,45 @@ async def handle_download_callback(callback: CallbackQuery, bot: Bot):
     lang = resolve_lang(callback)
     parts = callback.data.split(":")
     if len(parts) != 3:
-        await callback.answer(t("error.invalid_request", lang), show_alert=True)
+        await callback.answer(t_plain("error.invalid_request", lang), show_alert=True)
         return
 
     _, qid, quality = parts
     if quality not in ["MP3", "FLAC"]:
-        await callback.answer(t("error.invalid_download_quality", lang), show_alert=True)
+        await callback.answer(t_plain("error.invalid_download_quality", lang), show_alert=True)
+        return
+
+    # Защита от дубликатов по кнопке
+    btn_key = f"btn:{qid}"
+    if btn_key in active_download_keys:
+        await callback.answer(t_plain("status.starting_dl", lang, quality=quality))
         return
 
     query_data = await query_store.get(qid)
 
     if not query_data:
         await callback.answer(
-            t("error.expired_button", lang),
+            t_plain("error.expired_button", lang),
             show_alert=True,
         )
         return
 
-    await callback.answer(t("status.starting_dl", lang, quality=quality))
+    url_or_query = query_data["url_or_query"]
+    meta = query_data["meta"]
+    artist = meta.get("artist") or t("card.unknown_artist", lang)
+    title = meta.get("title") or t("card.unknown_track", lang)
+
+    chat_id = callback.message.chat.id if callback.message and callback.message.chat else 0
+    track_key = f"{chat_id}:{artist.strip().lower()}:{title.strip().lower()}:{quality}"
+    if track_key in active_download_keys:
+        logger.info(f"Трек {artist} - {title} [{quality}] уже скачивается для чата {chat_id}")
+        await callback.answer(t_plain("status.starting_dl", lang, quality=quality))
+        return
+
+    active_download_keys.add(btn_key)
+    active_download_keys.add(track_key)
+
+    await callback.answer(t_plain("status.starting_dl", lang, quality=quality))
 
     # Убираем клавиатуру у карточки, чтобы предотвратить повторные случайные клики
     try:
@@ -567,21 +609,12 @@ async def handle_download_callback(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
 
-    url_or_query = query_data["url_or_query"]
-    meta = query_data["meta"]
-    artist = meta.get("artist") or t("card.unknown_artist", lang)
-    title = meta.get("title") or t("card.unknown_track", lang)
-
+    emj = emoji_kwargs()
+    header = f"{emj['emoji_queue']} <b>{escape_html(artist)} — {escape_html(title)}</b> [{quality}]"
     # Создаем сообщение со статусом процесса
     status_msg = await bot.send_message(
-        chat_id=callback.message.chat.id,
-        text=t(
-            "status.searching_sources",
-            lang,
-            artist=escape_html(artist),
-            title=escape_html(title),
-            quality=quality,
-        ),
+        chat_id=chat_id,
+        text=format_status_text("status.searching_sources", lang=lang, header=header),
         parse_mode=ParseMode.HTML,
     )
 
@@ -589,12 +622,13 @@ async def handle_download_callback(callback: CallbackQuery, bot: Bot):
     task = asyncio.create_task(
         run_download_and_send(
             bot=bot,
-            chat_id=callback.message.chat.id,
+            chat_id=chat_id,
             query_or_url=url_or_query,
             target_quality=quality,
             meta=meta,
             status_msg=status_msg,
             lang=lang,
+            dedup_keys={btn_key, track_key},
         )
     )
     active_download_tasks.add(task)
@@ -662,6 +696,15 @@ async def handle_track_query(message: Message, bot: Bot):
 
     # Если у пользователя настроено авто-скачивание в MP3 или FLAC
     if pref in ["MP3", "FLAC"]:
+        artist = meta.get("artist") or t("card.unknown_artist", lang)
+        title = meta.get("title") or t("card.unknown_track", lang)
+        track_key = f"{message.chat.id}:{artist.strip().lower()}:{title.strip().lower()}:{pref}"
+        if track_key in active_download_keys:
+            logger.info(f"Трек {artist} - {title} [{pref}] уже скачивается для чата {message.chat.id}, повтор пропущен.")
+            return
+
+        active_download_keys.add(track_key)
+
         # Качество уже выбрано — карточку шлём без кнопок
         status_msg = await message.answer(
             t("status.auto_download", lang, pref=pref, card_text=card_text),
@@ -676,6 +719,7 @@ async def handle_track_query(message: Message, bot: Bot):
                 meta=meta,
                 status_msg=status_msg,
                 lang=lang,
+                dedup_keys={track_key},
             )
         )
         active_download_tasks.add(task)
@@ -760,7 +804,7 @@ async def main():
         api_url: Optional[str] = config.BOT_API_SERVER_URL or None
 
         if config.is_local_bot_api_enabled():
-            api_manager = LocalBotAPIManager()
+            api_manager = LocalBotAPIManager(api_url=api_url)
             local_url = await api_manager.start()
             if local_url:
                 api_url = local_url

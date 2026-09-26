@@ -923,8 +923,8 @@ def test_local_bot_api_manager_start_binary_success(tmp_path):
     asyncio.run(run())
 
 
-def test_local_bot_api_manager_docker_fallback_success(tmp_path):
-    """Если бинарный файл не найден, но есть Docker, запускает контейнер aiogram/telegram-bot-api."""
+def test_local_bot_api_manager_docker_not_autostarted(tmp_path):
+    """Бинарный файл не найден, docker в PATH есть, но контейнер автоматически не поднимается (fallback на Cloud API)."""
     async def run():
         manager = bot.LocalBotAPIManager(
             api_id="999888",
@@ -934,50 +934,20 @@ def test_local_bot_api_manager_docker_fallback_success(tmp_path):
             bin_path=None,
         )
 
-        # Мокируем отсутствие бинарника и наличие docker в PATH
         with patch.object(manager, "find_binary", return_value=None), \
-             patch("shutil.which", return_value="/usr/bin/docker"):
+             patch("shutil.which", return_value="/usr/bin/docker"), \
+             patch("asyncio.create_subprocess_exec") as mock_exec:
 
-            mock_rm = MagicMock()
-            mock_rm.wait = AsyncMock(return_value=0)
-
-            mock_run = MagicMock()
-            mock_run.returncode = 0
-            mock_run.communicate = AsyncMock(return_value=(b"container_id_123", b""))
-
-            mock_stop = MagicMock()
-            mock_stop.wait = AsyncMock(return_value=0)
-
-            mock_exec = AsyncMock(side_effect=[mock_rm, mock_run, mock_stop])
-
-            health_mock = AsyncMock(side_effect=[False, True])
-
-            with patch.object(manager, "check_health", health_mock), \
-                 patch("asyncio.create_subprocess_exec", mock_exec):
-
+            health_mock = AsyncMock(return_value=False)
+            with patch.object(manager, "check_health", health_mock):
                 url = await manager.start()
-                assert url == "http://127.0.0.1:8085"
-                assert manager.started_docker is True
-                assert manager.process is None
-
-                # Проверяем аргументы docker run
-                run_call_args = mock_exec.await_args_list[1][0]
-                assert "docker" in run_call_args
-                assert "run" in run_call_args
-                assert "-d" in run_call_args
-                assert "--rm" in run_call_args
-                assert "aiogram/telegram-bot-api:latest" in run_call_args
-                assert "-e" in run_call_args
-                assert "TELEGRAM_LOCAL=1" in run_call_args
-                assert "TELEGRAM_API_ID=999888" in run_call_args
-
-                # Остановка контейнера
-                await manager.stop()
+                assert url is None
                 assert manager.started_docker is False
-                stop_call_args = mock_exec.await_args_list[2][0]
-                assert stop_call_args[:3] == ("docker", "stop", "-t")
+                assert manager.process is None
+                mock_exec.assert_not_called()
 
     asyncio.run(run())
+
 
 
 def test_local_bot_api_manager_neither_binary_nor_docker_fallback():
@@ -1189,34 +1159,18 @@ def test_main_with_local_bot_api_disabled():
     asyncio.run(run())
 
 
-def test_local_bot_api_manager_docker_run_fails_with_error(tmp_path):
-    """Если docker run завершился с ненулевым кодом ошибки, происходит откат на Cloud API."""
+def test_local_bot_api_manager_custom_api_url_healthy():
+    """Если задан кастомный api_url и сервер отвечает, он переиспользуется."""
     async def run():
         manager = bot.LocalBotAPIManager(
             api_id="123",
             api_hash="abc",
-            port=8081,
-            data_dir=tmp_path,
+            api_url="http://127.0.0.1:9000",
         )
-
-        mock_rm = MagicMock()
-        mock_rm.wait = AsyncMock(return_value=0)
-
-        mock_run = MagicMock()
-        mock_run.returncode = 125
-        mock_run.communicate = AsyncMock(return_value=(b"", b"Docker daemon error"))
-
-        mock_exec = AsyncMock(side_effect=[mock_rm, mock_run])
-
-        with patch.object(manager, "check_health", AsyncMock(return_value=False)), \
-             patch.object(manager, "find_binary", return_value=None), \
-             patch("shutil.which", return_value="/usr/bin/docker"), \
-             patch("asyncio.create_subprocess_exec", mock_exec):
-
+        with patch.object(manager, "check_health", AsyncMock(return_value=True)):
             url = await manager.start()
-            assert url is None
-            assert manager.started_docker is False
-            assert manager.process is None
+            assert url == "http://127.0.0.1:9000"
+            assert manager._is_external is True
 
     asyncio.run(run())
 
@@ -1508,7 +1462,210 @@ def test_main_exits_if_single_instance_lock_fails():
         assert exc_info.value.code == 1
         mock_lock.release.assert_not_called()
 
+def test_download_callback_duplicate_click_ignored():
+    """Повторный клик по кнопке скачивания игнорируется и не запускает вторую загрузку."""
+    async def run():
+        mock_store = bot.QueryStore()
+        await mock_store.put("qid_dup", {
+            "url_or_query": "Daft Punk - One More Time",
+            "meta": {"artist": "Daft Punk", "title": "One More Time"}
+        })
+
+        mock_callback = MagicMock(spec=CallbackQuery)
+        mock_callback.data = "dl:qid_dup:MP3"
+        mock_callback.answer = AsyncMock()
+        mock_callback.message = MagicMock(spec=Message)
+        mock_callback.message.chat = MagicMock(id=99999)
+        mock_callback.message.edit_reply_markup = AsyncMock()
+
+        mock_bot = MagicMock(spec=bot.Bot)
+        mock_bot.send_message = AsyncMock(return_value=MagicMock(spec=Message))
+
+        with patch("bot.query_store", mock_store), \
+             patch("bot.run_download_and_send", AsyncMock()) as mock_run:
+            # Первый клик
+            await bot.handle_download_callback(mock_callback, mock_bot)
+            assert mock_run.call_count == 1
+
+            # Второй клик с тем же qid
+            await bot.handle_download_callback(mock_callback, mock_bot)
+            # Вторая задача НЕ должна запускаться
+            assert mock_run.call_count == 1
+
     asyncio.run(run())
+
+
+def test_status_notifier_prettify_stage_formatting():
+    """Проверяет корректность форматирования этапов через prettify_stage."""
+    from bot.notifier import prettify_stage
+
+    # Русская локализация
+    assert "Deezer: скачивание MP3 320k" in prettify_stage("[*] Deezer: скачивание MP3 320...", lang="ru")
+    assert "YouTube Music: скачивание трека" in prettify_stage("[*] YouTube Music: поиск и скачивание...", lang="ru")
+    assert "Soulseek: поиск FLAC" in prettify_stage("[*] Soulseek: поиск FLAC...", lang="ru")
+    assert "Вшиваю метаданные и обложку" in prettify_stage("[*] Тегирование: track.mp3 (Deezer)...", lang="ru")
+    assert "FLAC не найден, ищу в MP3 320k" in prettify_stage("[!] FLAC не найден -> переключение на MP3...", lang="ru")
+
+    # Английская локализация
+    assert "Deezer: downloading MP3 320k" in prettify_stage("[*] Deezer: скачивание MP3 320...", lang="en")
+    assert "YouTube Music: downloading track" in prettify_stage("[*] YouTube Music: поиск и скачивание...", lang="en")
+    assert "Embedding metadata and cover art" in prettify_stage("[*] Тегирование: track.mp3 (Deezer)...", lang="en")
+
+
+def test_status_notifier_worker_thread_notification():
+    """Статусы, отправляемые из рабочего потока через status_callback, успешно доставляются в event loop."""
+    import threading
+
+    async def run():
+        mock_bot = MagicMock(spec=bot.Bot)
+        mock_msg = MagicMock(spec=Message)
+        mock_msg.edit_text = AsyncMock()
+
+        notifier = bot.StatusNotifier(mock_bot, mock_msg, header="TestHeader", min_interval=0.01)
+
+        def worker():
+            notifier.notify("[*] Deezer: скачивание MP3 320...")
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        # Даем event loop время на обработку call_soon_threadsafe
+        await asyncio.sleep(0.05)
+
+        assert mock_msg.edit_text.await_count >= 1
+        last_call_text = mock_msg.edit_text.await_args[0][0]
+        assert "TestHeader" in last_call_text
+        assert "Deezer" in last_call_text
+
+        notifier.close()
+
+    asyncio.run(run())
+
+
+def test_strip_html():
+    """strip_html корректно удаляет <tg-emoji> и любые HTML теги, оставляя Unicode эмодзи."""
+    from bot.emoji import strip_html
+
+    assert strip_html(None) is None
+    assert strip_html("") == ""
+    assert strip_html("Простой текст") == "Простой текст"
+
+    # Кастомный эмодзи тег
+    custom_tag = '<tg-emoji emoji-id="5251750898467649056">✅</tg-emoji>'
+    assert strip_html(custom_tag) == "✅"
+
+    # Реальный пример уведомления
+    alert_raw = (
+        '<tg-emoji emoji-id="5251750898467649056">✅</tg-emoji> Запомнил: '
+        '<tg-emoji emoji-id="5287597429959467041">💿</tg-emoji> FLAC Lossless (автоматически)'
+    )
+    assert strip_html(alert_raw) == "✅ Запомнил: 💿 FLAC Lossless (автоматически)"
+
+    # HTML разметка и сущности
+    html_raw = "<b>Внимание &amp; предупреждение:</b> <i><tg-emoji emoji-id=\"123\">⚠️</tg-emoji> Ошибка</i>"
+    assert strip_html(html_raw) == "Внимание & предупреждение: ⚠️ Ошибка"
+
+
+def test_t_plain():
+    """t_plain возвращает локализованную строку без HTML-тегов даже при включенных кастомных эмодзи."""
+    from bot.emoji import set_custom_emoji_enabled
+    from bot.i18n import t, t_plain
+
+    try:
+        set_custom_emoji_enabled(True)
+        pref_label = t("pref.flac", "ru")
+        assert "<tg-emoji" in pref_label
+
+        plain = t_plain("settings.quality_saved_alert", "ru", pref=pref_label)
+        assert "<tg-emoji" not in plain
+        assert "<" not in plain and ">" not in plain
+        assert "✅ Запомнил: 💿 FLAC Lossless (автоматически)" == plain
+    finally:
+        set_custom_emoji_enabled(False)
+
+
+def test_handle_preference_callback_custom_emoji_stripped(tmp_path):
+    """При включенных кастомных эмодзи всплывающее уведомление callback.answer не содержит тегов."""
+    from bot.emoji import set_custom_emoji_enabled
+
+    async def run():
+        test_settings = bot.UserSettings(tmp_path / "pref_emoji.json")
+        try:
+            set_custom_emoji_enabled(True)
+            with patch("bot.user_settings", test_settings):
+                mock_callback = MagicMock(spec=CallbackQuery)
+                mock_callback.from_user = MagicMock(id=456)
+                mock_callback.data = "pref:FLAC"
+                mock_callback.answer = AsyncMock()
+                mock_callback.message = MagicMock(spec=Message)
+                mock_callback.message.edit_text = AsyncMock()
+
+                await bot.handle_preference_callback(mock_callback)
+
+                mock_callback.answer.assert_awaited_once_with(
+                    "✅ Запомнил: 💿 FLAC Lossless (автоматически)"
+                )
+        finally:
+            set_custom_emoji_enabled(False)
+
+    asyncio.run(run())
+
+
+def test_handle_download_callback_expired_custom_emoji_stripped():
+    """При включенных кастомных эмодзи alert об истечении кнопки не содержит сырых тегов."""
+    from bot.emoji import set_custom_emoji_enabled
+
+    async def run():
+        try:
+            set_custom_emoji_enabled(True)
+            mock_callback = MagicMock(spec=CallbackQuery)
+            mock_callback.data = "dl:expired_id_test:MP3"
+            mock_callback.answer = AsyncMock()
+
+            mock_bot = MagicMock(spec=bot.Bot)
+
+            await bot.handle_download_callback(mock_callback, mock_bot)
+
+            mock_callback.answer.assert_awaited_once_with(
+                "⚠️ Срок действия этой кнопки истёк. Пожалуйста, отправьте ссылку на трек заново.",
+                show_alert=True,
+            )
+        finally:
+            set_custom_emoji_enabled(False)
+
+    asyncio.run(run())
+
+
+def test_callback_query_answer_patch_real_instance():
+    """Проверяет, что патч CallbackQuery.answer очищает HTML-теги даже при прямом вызове answer."""
+    from aiogram.types import CallbackQuery, User
+
+    async def run():
+        mock_bot = AsyncMock()
+        mock_bot.return_value = True
+
+        cb = CallbackQuery(
+            id="query_123",
+            from_user=User(id=1, is_bot=False, first_name="Test"),
+            chat_instance="inst_123",
+        )
+        cb._bot = mock_bot
+
+        raw_alert = (
+            '<tg-emoji emoji-id="5251750898467649056">✅</tg-emoji> Запомнил: '
+            '<tg-emoji emoji-id="5287597429959467041">💿</tg-emoji> FLAC'
+        )
+        await cb.answer(raw_alert)
+
+        mock_bot.assert_awaited_once()
+        method_call = mock_bot.await_args[0][0]
+        assert method_call.callback_query_id == "query_123"
+        assert method_call.text == "✅ Запомнил: 💿 FLAC"
+
+    asyncio.run(run())
+
+
 
 
 

@@ -21,11 +21,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from .emoji import emoji_kwargs
+from .emoji import emoji_kwargs, strip_html
 
 logger = logging.getLogger("mus_bot.i18n")
 
-__all__ = ["t", "detect_lang", "SUPPORTED_LANGS", "FALLBACK_LANG"]
+__all__ = ["t", "t_plain", "detect_lang", "SUPPORTED_LANGS", "FALLBACK_LANG"]
 
 SUPPORTED_LANGS = ("ru", "en")
 FALLBACK_LANG = "ru"
@@ -255,3 +255,15 @@ def t(key: str, lang: str, **kwargs: Any) -> str:
         except (KeyError, ValueError, IndexError) as exc:
             logger.debug("i18n format error for key %r: %s", key, exc)
     return raw
+
+
+def t_plain(key: str, lang: str, **kwargs: Any) -> str:
+    """
+    Look up a localisation string and return plain text without HTML tags.
+
+    Standard Unicode emojis are kept, but <tg-emoji> and other HTML tags are stripped.
+    Used for callback query notifications (callback.answer) and plain-text alerts.
+    """
+    rendered = t(key, lang, **kwargs)
+    return strip_html(rendered) or ""
+

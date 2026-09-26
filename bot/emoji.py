@@ -8,6 +8,8 @@ warning, settings, quality, search, upload, queue, error.
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Optional
 
 from aiogram import types
@@ -24,6 +26,7 @@ __all__ = [
     "set_custom_emoji_enabled",
     "is_custom_emoji_enabled",
     "e",
+    "strip_html",
     "make_inline_button",
 ]
 
@@ -133,6 +136,21 @@ def emoji_kwargs() -> dict[str, str]:
     render custom emoji when enabled and plain Unicode fallbacks otherwise.
     """
     return {f"emoji_{name}": e(emoji_id, fallback) for name, (emoji_id, fallback) in DOMAIN_EMOJI.items()}
+
+
+def strip_html(text: Optional[str]) -> Optional[str]:
+    """
+    Remove HTML tags and decode HTML entities, leaving plain text with standard emojis.
+
+    Telegram callback query alerts (notifications shown at the top or modal dialogs)
+    do not support parse_mode/HTML formatting. Passing <tg-emoji> tags displays raw
+    HTML markup to the user. This function strips <tg-emoji ...> and any other HTML
+    tags while retaining inner text/standard Unicode emoji fallbacks.
+    """
+    if text is None:
+        return None
+    cleaned = re.sub(r"<[^>]+>", "", text, flags=re.DOTALL)
+    return html.unescape(cleaned).strip()
 
 
 def make_inline_button(
