@@ -1034,3 +1034,63 @@ def test_embedded_soulseek_peer_busy_initializing_state_prevents_timeout(tmp_pat
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
+
+
+def test_parse_slskd_quality_rejects_m4a_in_flac_mode():
+    file_info = {
+        "bit_depth": 16,
+        "sample_rate": 44100,
+        "bitrate": 1000,
+        "duration": 200,
+        "size": 25000000,
+    }
+    label, score = parse_slskd_quality(
+        filename="Daft Punk - One More Time.m4a",
+        file_info=file_info,
+        target_quality="FLAC",
+        expected_duration=200,
+    )
+    assert label == "Lossy"
+    assert score == 0.0
+
+
+def test_search_soulseek_rejects_m4a_in_flac_mode():
+    mock_es = MagicMock()
+    mock_es.search.return_value = [
+        {
+            "username": "peer1",
+            "filename": "Daft Punk\\Discovery\\01 - One More Time.m4a",
+            "size": 30000000,
+            "bit_depth": 16,
+            "sample_rate": 44100,
+            "bitrate": 1000,
+            "duration": 200,
+            "has_free_slot": True,
+            "upload_speed": 1000000,
+            "queue_length": 0,
+        },
+        {
+            "username": "peer2",
+            "filename": "Daft Punk\\Discovery\\01 - One More Time.flac",
+            "size": 35000000,
+            "bit_depth": 16,
+            "sample_rate": 44100,
+            "bitrate": 900,
+            "duration": 200,
+            "has_free_slot": False,
+            "upload_speed": 500000,
+            "queue_length": 1,
+        },
+    ]
+
+    with patch.object(EmbeddedSoulseek, "get_instance", return_value=mock_es):
+        results = search_soulseek(
+            artist="Daft Punk",
+            title="One More Time",
+            limit=5,
+            target_quality="FLAC",
+            duration=200,
+        )
+        assert len(results) == 1
+        assert results[0]["slskd_username"] == "peer2"
+        assert results[0]["slskd_filename"].endswith(".flac")

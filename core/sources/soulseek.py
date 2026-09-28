@@ -555,8 +555,8 @@ def parse_slskd_quality(
             dur_penalty = min(diff * 5.0, 80.0)
 
     if target_quality == "FLAC":
-        if not is_lossless:
-            # В режиме FLAC lossy форматы (MP3, AAC) строго отклоняются
+        if not is_flac:
+            # В режиме FLAC файлы не FLAC (.m4a, .mp3, .wav, .aac) строго отклоняются
             return ("Lossy", 0.0)
 
         # 1. Hi-Res FLAC (24-bit / 96kHz, 88.2kHz, 192kHz)
@@ -568,15 +568,9 @@ def parse_slskd_quality(
             return (label, score)
 
         # 2. Standard Red Book CD FLAC (16-bit / 44.1kHz или 48kHz)
-        if is_flac:
-            rate_khz = sample_rate // 1000 if sample_rate else 44
-            label = f"FLAC 16bit/{rate_khz}kHz (~{effective_bitrate or 900}kbps)"
-            score = 1200.0 + rate_khz + min((effective_bitrate or 0) / 100.0, 20.0) - dur_penalty
-            return (label, score)
-
-        # 3. WAV / ALAC Lossless
-        label = f"Lossless ({effective_bitrate or 1000}kbps)"
-        score = 1100.0 - dur_penalty
+        rate_khz = sample_rate // 1000 if sample_rate else 44
+        label = f"FLAC 16bit/{rate_khz}kHz (~{effective_bitrate or 900}kbps)"
+        score = 1200.0 + rate_khz + min((effective_bitrate or 0) / 100.0, 20.0) - dur_penalty
         return (label, score)
 
     else:
@@ -727,6 +721,10 @@ def search_soulseek(
 
     for cand in raw_candidates:
         filename = cand["filename"]
+        if target_quality == "FLAC" and not filename.lower().endswith(".flac"):
+            rejected_lossy += 1
+            continue
+
         fn_tokens = toks(filename)
         leaf_stem = Path(filename.replace("\\", "/")).stem
         leaf_tokens = toks(leaf_stem)

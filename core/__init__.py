@@ -148,9 +148,15 @@ def download_track_by_link(
                     target_quality="FLAC",
                     status_callback=report,
                 )
-                if file_path:
+                if file_path and file_path.suffix.lower() == ".flac":
                     source_used = f"Soulseek ({cand['quality']})"
                     break
+                if file_path:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    file_path = None
             if not file_path and candidates:
                 report(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
