@@ -45,6 +45,11 @@ KIND_ISRC = "isrc"
 KIND_QUERY = "query"
 KIND_RELEASE = "release"
 KIND_DEEZER = "deezer"
+KIND_DEEZER_ISRC = "deezer_isrc"
+
+# Точный поиск по ISRC - один сетевой запрос вместо перебора кандидатов,
+# поэтому кэшируем заметно дольше обычного поиска по названию.
+DEEZER_TTL_DAYS = 90.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -322,6 +327,25 @@ class MetadataCache:
             return
         key = f"{_norm_text(artist)}|{_norm_text(title)}|{_norm_text(album)}"
         self.set(KIND_DEEZER, key, track_id)
+
+    def get_deezer_id_by_isrc(self, isrc: str) -> Optional[str]:
+        """
+        Результат точного поиска по ISRC - самое дорогое, что мы делаем.
+
+        Пустая строка означает «мы уже спросили, на Deezer такого ISRC нет».
+        Это тоже кэшируется, иначе каждый повторный запрос заново ломится
+        в Deezer за одним и тем же ответом.
+        """
+        key = normalize_isrc(isrc)
+        if not key:
+            return None
+        return self.get(KIND_DEEZER_ISRC, key)
+
+    def set_deezer_id_by_isrc(self, isrc: str, track_id: str) -> None:
+        key = normalize_isrc(isrc)
+        if not key or track_id is None:
+            return
+        self.set(KIND_DEEZER_ISRC, key, track_id, ttl_days=DEEZER_TTL_DAYS)
 
     # -- обслуживание ----------------------------------------------------
 

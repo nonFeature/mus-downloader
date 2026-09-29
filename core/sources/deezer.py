@@ -51,6 +51,42 @@ def decrypt_and_save(stream_iterator, bf_key: bytes, dest_path: Path):
         if len(buffer) > 0:
             f.write(bytes(buffer))
 
+def _normalize_isrc(isrc: str) -> str:
+    """Deezer ждёт ISRC без дефисов и в верхнем регистре."""
+    return re.sub(r"[^A-Za-z0-9]", "", isrc or "").upper()
+
+
+def search_deezer_by_isrc(isrc: str) -> Optional[dict]:
+    """
+    Находит трек на Deezer по ISRC.
+
+    В отличие от поиска по названию это ТОЧНОЕ соответствие: ISRC
+    идентифицирует конкретную звукозапись, поэтому угадывать нечего.
+    Один запрос вместо перебора кандидатов со скорингом.
+
+    Возвращает сырой ответ API (id, title, artist, album, duration, isrc,
+    обложка) или None, если такого ISRC у Deezer нет.
+    """
+    normalized = _normalize_isrc(isrc)
+    if len(normalized) < 10:
+        return None
+    try:
+        r = httpx.get(
+            f"https://api.deezer.com/track/isrc:{normalized}",
+            headers={"User-Agent": config.BROWSER_USER_AGENT},
+            timeout=httpx.Timeout(6.0, connect=4.0),
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if data.get("error") or not data.get("id"):
+            return None
+        return data
+    except Exception as e:
+        print(f"[!] Deezer ISRC {normalized}: {e}")
+        return None
+
+
 def download_deezer_track(
     track_id: str,
     dest_dir: Path,

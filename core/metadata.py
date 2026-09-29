@@ -7,6 +7,7 @@ import config
 
 from . import coverart
 from . import cache as cache_mod
+from .cache import normalize_isrc
 
 USER_AGENT = config.BROWSER_USER_AGENT
 # MusicBrainz и Cover Art Archive (проект MetaBrainz) требуют
@@ -399,6 +400,64 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
     except Exception as e:
         print(f"[!] Deezer: {e}")
     return None
+
+def resolve_deezer_by_isrc(
+    isrc: str,
+    expected_artist: str = "",
+    expected_title: str = "",
+    expected_duration: Optional[float] = None,
+) -> Optional[dict]:
+    """
+    Разрешает ISRC в проверенный трек Deezer.
+
+    ISRC приходит извне (MusicBrainz, song.link, метаданные другого
+    сервиса), поэтому результат всё равно проходит через ту же валидацию,
+    что и поиск по названию: отсеиваем караоке/каверы и проверяем
+    длительность. Просто путь короче и точнее - без перебора кандидатов.
+
+    Возвращает dict с полем ``deezer_id`` и метаданными Deezer, либо None.
+    """
+    from .sources.deezer import search_deezer_by_isrc
+
+    data = search_deezer_by_isrc(isrc)
+    if not data:
+        return None
+
+    track_id = str(data["id"])
+    album_info = data.get("album", {}) or {}
+    artist_info = data.get("artist", {}) or {}
+    title = data.get("title") or ""
+    artist = artist_info.get("name") or ""
+
+    # ISRC из ответа может отличаться от запрошенного (регистр, дефисы).
+    # Если Deezer вернул другую запись - не доверяем.
+    returned_isrc = normalize_isrc(data.get("isrc") or "")
+    requested_isrc = normalize_isrc(isrc)
+    if returned_isrc and requested_isrc and returned_isrc != requested_isrc:
+        return None
+
+    if expected_artist or expected_title:
+        validated = validate_deezer_track(
+            track_id,
+            target_title=expected_title,
+            target_artist=expected_artist,
+            target_duration=expected_duration,
+        )
+        if not validated:
+            return None
+    else:
+        validated = {
+            "title": title,
+            "artist": artist,
+            "isrc": data.get("isrc"),
+            "album": album_info.get("title"),
+            "album_art": album_info.get("cover_xl") or album_info.get("cover_big"),
+            "duration": data.get("duration"),
+        }
+
+    validated["deezer_id"] = track_id
+    return validated
+
 
 def validate_deezer_track(
     deezer_id: str | int,

@@ -169,7 +169,6 @@ def download_track_by_link(
     
     file_path: Optional[Path] = None
     source_used: Optional[str] = None
-    fallback_sc_file: Optional[Path] = None
 
     # 1.5 Локальный кэш скачанных файлов: если трек уже лежит на диске,
     # повторно ходить по источникам не нужно.
@@ -189,6 +188,39 @@ def download_track_by_link(
             return cached
 
     deezer_id = meta.get("deezer_id")
+
+    # Точный путь: ISRC идентифицирует конкретную звукозапись, поэтому
+    # Deezer ищется в один запрос вместо перебора кандидатов со скорингом.
+    isrc = meta.get("isrc")
+    if not deezer_id and isrc:
+        # Различаем «не кэшировано» (None) и «кэшированный отказ» (""):
+        # иначе каждый повторный запрос заново ломился бы в Deezer за одним
+        # и тем же ответом «такого ISRC нет».
+        cached_by_isrc = cache.get_deezer_id_by_isrc(isrc)
+        if cached_by_isrc is None:
+            report(f"[*] Deezer: поиск по ISRC {isrc}...")
+            isrc_meta = metadata.resolve_deezer_by_isrc(
+                isrc,
+                expected_artist=artist,
+                expected_title=title,
+                expected_duration=duration,
+            )
+            if isrc_meta:
+                deezer_id = isrc_meta.get("deezer_id")
+                cache.set_deezer_id_by_isrc(isrc, deezer_id)
+                # ISRC-путь даёт и обложку с точного релиза - она лучше,
+                # чем то, что пришло от испорченного источника.
+                if isrc_meta.get("album_art") and not meta.get("album_art"):
+                    meta["album_art"] = isrc_meta["album_art"]
+                for field in ("album", "year", "track_number", "genre", "album_artist"):
+                    if not meta.get(field) and isrc_meta.get(field):
+                        meta[field] = isrc_meta[field]
+            else:
+                cache.set_deezer_id_by_isrc(isrc, "")
+        elif cached_by_isrc:
+            deezer_id = cached_by_isrc
+            report(f"[*] Deezer: точный трек по ISRC {isrc} (из кэша)")
+
     if not deezer_id and artist and title:
         deezer_id = cache.get_deezer_id(artist, title, album or "")
         if not deezer_id:
@@ -196,35 +228,9 @@ def download_track_by_link(
             if deezer_id:
                 cache.set_deezer_id(artist, title, album or "", deezer_id)
 
-    # 2. Логика для FLAC (строгий поиск lossless: Deezer FLAC -> Soulseek FLAC)
+    # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
     if target_quality == "FLAC":
-        # Шаг FLAC-1: Deezer (мгновенный студийный FLAC напрямую от лейбла)
-        if not file_path and deezer_id:
-            report("[*] Deezer: скачивание FLAC...")
-            file_path = download_deezer_track(
-                deezer_id,
-                target_dir,
-                target_quality="FLAC",
-                artist=artist,
-                title=title,
-                progress_callback=progress_callback,
-            )
-            # Если исходный ID не сработал, пробуем найти альтернативный релиз на Deezer
-            if not file_path and artist and title:
-                alt_dz = search_deezer_track(artist, title, duration=duration, album=album)
-                if alt_dz and alt_dz != deezer_id:
-                    file_path = download_deezer_track(
-                        alt_dz,
-                        target_dir,
-                        target_quality="FLAC",
-                        artist=artist,
-                        title=title,
-                        progress_callback=progress_callback,
-                    )
-            if file_path and file_path.suffix.lower() == ".flac":
-                source_used = "Deezer FLAC"
-
-        # Шаг FLAC-2: Soulseek (P2P Lossless)
+        # Шаг FLAC-1: Soulseek (только FLAC, в первую очередь)
         if not file_path and (config.SLSK_USER or config.SLSKD_URL):
             report("[*] Soulseek: поиск FLAC...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
@@ -253,26 +259,23 @@ def download_track_by_link(
             if not file_path and candidates:
                 report(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
-        # Если дана прямая ссылка SoundCloud, проверяем наличие Lossless-оригинала (FLAC/WAV)
-        if not file_path and is_soundcloud:
-            report("[*] SoundCloud: проверка Lossless оригинала...")
-            sc_target = meta.get("soundcloud_url") or url_or_query
-            sc_candidate = download_soundcloud_track(
-                url=sc_target,
-                dest_dir=target_dir,
+        # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
+        if not file_path and deezer_id:
+            report("[*] Deezer: скачивание FLAC...")
+            file_path = download_deezer_track(
+                deezer_id,
+                target_dir,
+                target_quality="FLAC",
                 artist=artist,
                 title=title,
-                duration=duration,
-                album=album,
                 progress_callback=progress_callback,
             )
-            if sc_candidate:
-                if sc_candidate.suffix.lower() in [".flac", ".wav"]:
-                    file_path = sc_candidate
-                    source_used = "SoundCloud Lossless"
-                else:
-                    fallback_sc_file = sc_candidate
+            if file_path and file_path.suffix.lower() == ".flac":
+                source_used = "Deezer FLAC"
 
+        # SoundCloud в FLAC-ветке не проверяется: он отдаёт AAC/Opus
+        # ~128-160k, расширения .flac/.wav там не бывает, так что проверка
+        # всегда давала бы False, потратив полное скачивание файла.
         if not file_path:
             report("[!] FLAC не найден -> переключение на MP3...")
 
@@ -384,23 +387,19 @@ def download_track_by_link(
         # Шаг MP3-3c: Если передана прямая ссылка SoundCloud — скачиваем оригинал с SoundCloud
         # (если на Deezer и Soulseek не нашлось официального студийного релиза)
         if not file_path and is_soundcloud:
-            if fallback_sc_file and fallback_sc_file.exists():
-                file_path = fallback_sc_file
+            report(f"[*] SoundCloud: скачивание оригинала ({artist} - {title})...")
+            sc_target = meta.get("soundcloud_url") or url_or_query
+            file_path = download_soundcloud_track(
+                url=sc_target,
+                dest_dir=target_dir,
+                artist=artist,
+                title=title,
+                duration=duration,
+                album=album,
+                progress_callback=progress_callback,
+            )
+            if file_path:
                 source_used = "SoundCloud (Original)"
-            else:
-                report(f"[*] SoundCloud: скачивание оригинала ({artist} - {title})...")
-                sc_target = meta.get("soundcloud_url") or url_or_query
-                file_path = download_soundcloud_track(
-                    url=sc_target,
-                    dest_dir=target_dir,
-                    artist=artist,
-                    title=title,
-                    duration=duration,
-                    album=album,
-                    progress_callback=progress_callback,
-                )
-                if file_path:
-                    source_used = "SoundCloud (Original)"
 
         # Шаг MP3-4: YouTube Music с умным поиском CSVMusic (для текстовых запросов или стриминговых ссылок)
         if not file_path:
@@ -442,13 +441,6 @@ def download_track_by_link(
                     source_used = "SoundCloud (Original)"
                 else:
                     source_used = "Fallback (yt-dlp)"
-
-    # Очищаем неиспользованный резервный файл SoundCloud (если скачался лучший источник)
-    if fallback_sc_file and fallback_sc_file.exists() and fallback_sc_file != file_path:
-        try:
-            fallback_sc_file.unlink()
-        except Exception:
-            pass
 
     # 4. Если скачивание успешно, вшиваем метаданные и обложку
     if file_path and file_path.exists():
