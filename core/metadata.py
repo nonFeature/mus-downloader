@@ -420,7 +420,7 @@ def fetch_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
@@ -439,7 +439,7 @@ def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -603,7 +603,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         "limit": 5
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=3.5)
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
