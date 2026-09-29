@@ -46,8 +46,12 @@ _CAST_PENALTY_TERMS = {"cast", "original cast", "tribute band", "musical", "orch
 _TITLE_STOP_WORDS = {"the", "a", "an", "of", "and", "in", "on", "at", "to", "for", "with", "by", "is", "it"}
 
 def norm_text(s: str) -> str:
-    """Нормализует строку: Unicode NFKC, casefold, сжатие пробелов."""
-    text = unicodedata.normalize("NFKC", (s or "").casefold())
+    """Нормализует строку: Unicode NFKD без диакритики (ë->e, ÿ->y и т.д.), casefold, сжатие пробелов."""
+    if not s:
+        return ""
+    decomposed = unicodedata.normalize("NFD", s.casefold())
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    text = unicodedata.normalize("NFKC", stripped)
     return re.sub(r"\s+", " ", text).strip()
 
 def toks(s: str) -> Set[str]:

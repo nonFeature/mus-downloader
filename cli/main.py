@@ -106,7 +106,8 @@ def select_candidate_interactive(candidates: list[dict], query: str = "") -> Opt
 def cli_search_and_download(
     query: str,
     target_quality: str = "MP3",
-    dest_dir: Optional[Path] = None
+    dest_dir: Optional[Path] = None,
+    reuse_cached_file: bool = True,
 ) -> bool:
     """Интерактивный поиск по мульти-источникам и скачивание выбранного трека."""
     print_info(f"Поиск по мульти-источникам (Deezer, Apple Music, YouTube Music): '{query}'...")
@@ -136,6 +137,7 @@ def cli_search_and_download(
             dest_dir=dest_dir,
             track_meta=selected,
             progress_callback=progress_bar.update if is_interactive() else None,
+            reuse_cached_file=reuse_cached_file,
         )
     if file_path:
         print_success_panel(file_path)
@@ -165,8 +167,35 @@ def main():
         "-o", "--output", dest="dest_dir", type=str, default=None,
         help="Destination directory (default: ./downloads)"
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Ignore the local cache and download the track again"
+    )
+    parser.add_argument(
+        "--cache", dest="cache_action", choices=["info", "clear"], default=None,
+        help="Show local cache statistics or clear it, then exit"
+    )
 
     args = parser.parse_args()
+
+    # Служебные команды работы с кэшем: показываем статистику или чистим.
+    if args.cache_action:
+        from core.filecache import get_file_cache
+
+        fc = get_file_cache()
+        if args.cache_action == "clear":
+            removed = fc.clear()
+            print_info(f"Кэш очищен, удалено файлов: {removed}")
+        else:
+            stats = fc.stats()
+            size_mb = stats.get("bytes", 0) / (1024 * 1024)
+            print_info(
+                f"Кэш: {stats.get('entries', 0)} треков, {size_mb:.1f} МБ\n"
+                f"Путь: {stats.get('path', '?')}"
+            )
+        return
+
+    reuse_cached_file = not args.force
 
     # Определение режима поиска и запроса
     is_search = bool(args.search)
@@ -218,7 +247,12 @@ def main():
 
     try:
         if is_search:
-            success = cli_search_and_download(query, target_quality=target_quality, dest_dir=dest_dir)
+            success = cli_search_and_download(
+                query,
+                target_quality=target_quality,
+                dest_dir=dest_dir,
+                reuse_cached_file=reuse_cached_file,
+            )
             if not success:
                 sys.exit(1)
         else:
@@ -228,6 +262,7 @@ def main():
                     target_quality,
                     dest_dir=dest_dir,
                     progress_callback=progress_bar.update if is_interactive() else None,
+                    reuse_cached_file=reuse_cached_file,
                 )
             if file_path:
                 print_success_panel(file_path)

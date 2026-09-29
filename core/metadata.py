@@ -5,6 +5,9 @@ import urllib.parse
 from typing import Optional
 import config
 
+from . import coverart
+from . import cache as cache_mod
+
 USER_AGENT = "MusicDownloader/1.0 (akate@gmail.com)"
 
 def resolve_spotify_track(url: str) -> Optional[dict]:
@@ -131,25 +134,7 @@ def unshorten_url(url: str) -> str:
             pass
     return url
 
-def resolve_soundcloud_track(url: str) -> Optional[dict]:
-    """Извлекает метаданные трека из SoundCloud через публичный oEmbed."""
-    try:
-        r = httpx.get("https://soundcloud.com/oembed", params={"format": "json", "url": url}, timeout=3.5)
-        if r.status_code == 200:
-            data = r.json()
-            title = data.get("title", "")
-            author = data.get("author_name", "")
-            if " by " in title:
-                title = title.rsplit(" by ", 1)[0].strip()
-            return {
-                "title": title,
-                "artist": author,
-                "album_art": data.get("thumbnail_url"),
-                "soundcloud_url": url,
-            }
-    except Exception:
-        pass
-    return None
+# resolve_soundcloud_track реализована ниже вместе с resolve_youtube_track
 
 def resolve_direct_streaming_link(url: str) -> Optional[dict]:
     """Разрешает метаданные напрямую из ссылки на стриминговый сервис."""
@@ -397,6 +382,8 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
                     
             explicit = bool(data.get("explicit_lyrics") or data.get("explicit_content_lyrics") == 1)
             return {
+                "title": data.get("title"),
+                "artist": artist_info.get("name"),
                 "isrc": data.get("isrc"),
                 "album": album_info.get("title"),
                 "year": year,
@@ -409,6 +396,79 @@ def fetch_deezer_metadata(deezer_id: str) -> Optional[dict]:
     except Exception as e:
         print(f"[!] Deezer: {e}")
     return None
+
+def validate_deezer_track(
+    deezer_id: str | int,
+    target_title: str,
+    target_artist: str,
+    target_duration: Optional[float] = None,
+) -> Optional[dict]:
+    """
+    Умная валидация Deezer трека (по ID) против целевого названия, исполнителя и длительности.
+    - Запрашивает метаданные из Deezer API.
+    - Отсеивает караоке, трибьюты, левые каверы и инструменталки.
+    - Проверяет пересечение токенов названия трека (core title match).
+    - Проверяет аффинити артиста (не строгим '==', а пересечением токенов и исключением имитаций).
+    - Проверяет близость длительности.
+    Возвращает dict с метаданными Deezer при успехе, иначе None.
+    """
+    if not deezer_id:
+        return None
+    dz = fetch_deezer_metadata(str(deezer_id))
+    if not dz:
+        return None
+
+    c_title = dz.get("title", "")
+    c_artist = dz.get("artist") or dz.get("album_artist") or ""
+    c_dur = dz.get("duration")
+
+    if not c_title:
+        # Если title отсутствует в ответе (например, в моках тестов), проверяем ISRC или альбом
+        if dz.get("isrc") or dz.get("album"):
+            return dz
+        return None
+
+    target_query = f"{target_artist} {target_title}".strip()
+
+    try:
+        from sources.deezer import is_junk_track
+        if is_junk_track(c_title, c_artist, target_query):
+            return None
+    except Exception:
+        pass
+
+    try:
+        from sources.youtube_matcher import toks
+        c_title_toks = toks(c_title)
+        t_title_toks = toks(target_title)
+
+        # Кандидат ОБЯЗАН иметь хотя бы одно значимое слово из целевого названия!
+        if t_title_toks and not (t_title_toks & c_title_toks):
+            return None
+
+        title_overlap = len(t_title_toks & c_title_toks) / max(1, len(t_title_toks))
+        if title_overlap < 0.35:
+            return None
+
+        # Проверка длительности: если разница колоссальная (> 45s и > 20%), отсеиваем
+        if target_duration and c_dur:
+            dur_diff = abs(float(target_duration) - float(c_dur))
+            if dur_diff > 45 and (dur_diff / max(1.0, float(target_duration)) > 0.20):
+                return None
+
+        # Проверка автора
+        t_artist_toks = toks(target_artist)
+        c_artist_toks = toks(c_artist)
+        if t_artist_toks and c_artist_toks and not (t_artist_toks & c_artist_toks):
+            # 0 общих токенов в авторе. Это допустимо только при близкой длительности и хорошем названии
+            title_exact = (title_overlap >= 0.75)
+            dur_close = (not target_duration or not c_dur or abs(float(target_duration) - float(c_dur)) <= 8)
+            if not (title_exact and dur_close):
+                return None
+    except Exception:
+        pass
+
+    return dz
 
 def fetch_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
     """
@@ -529,6 +589,8 @@ def parse_mb_recording(recording: dict, expected_artist: str = "") -> dict:
         "track_number": None,
         "track_total": None,
         "album_artist": None,
+        "album_art": None,
+        "_mb_release_id": None,
         "duration": (recording.get("length") / 1000.0) if recording.get("length") else None,
         "_score": -999,
     }
@@ -557,6 +619,12 @@ def parse_mb_recording(recording: dict, expected_artist: str = "") -> dict:
         if best_release:
             metadata["album"] = best_release.get("title")
             metadata["_score"] = best_score
+            rel_id = best_release.get("id")
+            if rel_id:
+                metadata["_mb_release_id"] = rel_id
+                caa_art = fetch_coverartarchive_art(rel_id)
+                if caa_art:
+                    metadata["album_art"] = caa_art
             
             # Получаем год релиза
             date = best_release.get("date")
@@ -711,6 +779,7 @@ def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> 
                 release_date = best_track.get("releaseDate", "")
                 year = release_date[:4] if release_date else None
                 
+                duration = (best_track.get("trackTimeMillis", 0) / 1000.0) if best_track.get("trackTimeMillis") else None
                 return {
                     "title": best_track.get("trackName"),
                     "artist": best_track.get("artistName"),
@@ -720,6 +789,9 @@ def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> 
                     "track_total": best_track.get("trackCount"),
                     "album_artist": best_track.get("artistName"),
                     "album_art": art_url,
+                    "duration": duration,
+                    "apple_music_url": best_track.get("trackViewUrl"),
+                    "isrc": best_track.get("isrc"),
                 }
     except Exception as e:
         print(f"[!] iTunes: Ошибка получения метаданных: {e}")
@@ -952,6 +1024,191 @@ def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
         pass
     return None
 
+def fetch_coverartarchive_art(release_id: str, size: int = 0) -> Optional[str]:
+    """
+    Ищет официальную обложку релиза в MusicBrainz Cover Art Archive.
+
+    CAA отдаёт только 250 / 500 / 1200, поэтому при ``size`` > 1200 берётся
+    максимум. Раньше здесь жёстко стоял ``front-500`` — то есть в самом верху
+    каскада стоял минимальный размер, и он побеждал все 1000px-источники.
+    """
+    if not release_id:
+        return None
+    # Берём наименьший доступный размер, покрывающий запрос; если ничего не
+    # хватает — максимум.
+    candidates = [c for c in (250, 500, 1200) if size <= c] or [1200]
+    for candidate in candidates:
+        url = f"https://coverartarchive.org/release/{release_id}/front-{candidate}"
+        try:
+            r = httpx.head(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=4.0)
+            if r.status_code == 200:
+                return str(r.url)
+        except Exception:
+            pass
+    return None
+
+def fetch_lastfm_album_art(artist: str, album: str = "", title: str = "") -> Optional[str]:
+    """Ищет студийную квадратную обложку в Last.fm API по альбому или названию трека."""
+    if not artist or (not album and not title):
+        return None
+    api_key = config.LASTFM_API_KEY or "b25b959554ed76058ac220b7b2e0a026"
+    # 1. Поиск по альбому
+    if album:
+        try:
+            params = {
+                "method": "album.getinfo",
+                "api_key": api_key,
+                "artist": artist,
+                "album": album,
+                "format": "json",
+                "autocorrect": "1"
+            }
+            r = httpx.get("https://ws.audioscrobbler.com/2.0/", params=params, headers={"User-Agent": USER_AGENT}, timeout=5.0)
+            if r.status_code == 200:
+                data = r.json()
+                images = data.get("album", {}).get("image", [])
+                for size_key in ("mega", "extralarge", "large"):
+                    for img in reversed(images):
+                        if img.get("size") == size_key and img.get("#text"):
+                            raw_url = img["#text"]
+                            if "/300x300/" in raw_url:
+                                raw_url = raw_url.replace("/300x300/", "/_/")
+                            return raw_url
+        except Exception:
+            pass
+
+    # 2. Фолбек: поиск по треку (track.getinfo)
+    if title:
+        try:
+            params = {
+                "method": "track.getinfo",
+                "api_key": api_key,
+                "artist": artist,
+                "track": title,
+                "format": "json",
+                "autocorrect": "1"
+            }
+            r = httpx.get("https://ws.audioscrobbler.com/2.0/", params=params, headers={"User-Agent": USER_AGENT}, timeout=5.0)
+            if r.status_code == 200:
+                data = r.json()
+                images = data.get("track", {}).get("album", {}).get("image", [])
+                for size_key in ("mega", "extralarge", "large"):
+                    for img in reversed(images):
+                        if img.get("size") == size_key and img.get("#text"):
+                            raw_url = img["#text"]
+                            if "/300x300/" in raw_url:
+                                raw_url = raw_url.replace("/300x300/", "/_/")
+                            return raw_url
+        except Exception:
+            pass
+    return None
+
+def fetch_itunes_album_art(artist: str, album: str, size: int = 0) -> Optional[str]:
+    """Ищет квадратную обложку альбома в iTunes (по умолчанию 1000x1000)."""
+    if not artist or not album:
+        return None
+    try:
+        r = httpx.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{artist} {album}", "entity": "album", "limit": 3},
+            headers={"User-Agent": USER_AGENT},
+            timeout=5.0
+        )
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            for alb in results:
+                art = alb.get("artworkUrl100")
+                if art:
+                    return coverart.resize_itunes_url(art, size or 1000)
+    except Exception:
+        pass
+    return None
+
+def fetch_deezer_album_art(artist: str, album: str, size: int = 0) -> Optional[str]:
+    """Ищет студийную обложку альбома в Deezer (нативный мастер до 1400x1400)."""
+    if not artist or not album:
+        return None
+    try:
+        r = httpx.get(
+            "https://api.deezer.com/search/album",
+            params={"q": f"{artist} {album}", "limit": 3},
+            headers={"User-Agent": USER_AGENT},
+            timeout=5.0
+        )
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data:
+                art = data[0].get("cover_xl") or data[0].get("cover_big")
+                if art and size:
+                    return coverart.resize_dzcdn_url(art, size)
+                return art
+    except Exception:
+        pass
+    return None
+
+def fetch_best_cover_art(
+    artist: str,
+    album: str = "",
+    title: str = "",
+    release_id: str = "",
+    target_size: int = 0,
+) -> Optional[str]:
+    """
+    Каскадный поиск официальной студийной обложки.
+
+    Источники: Cover Art Archive -> Last.fm -> iTunes -> Deezer.
+
+    Раньше побеждал «первый ответивший», из-за чего обложка на 300px из
+    Last.fm легко обгоняла iTunes на 1000px. Теперь все кандидаты собираются,
+    приводятся к целевому размеру (где CDN это умеет) и ранжируются по
+    реально достижимому разрешению.
+
+    ``target_size`` — 1400 для FLAC, 768 для MP3, 0 = не переписывать.
+    """
+    cache = cache_mod.get_cache()
+
+    # Обложка меняется крайне редко, поэтому на неё отдельный долгий TTL.
+    # Приоритет у release_id: конкретный релиз точнее, чем пара (artist, album).
+    if release_id or (artist and album):
+        cached_art = cache.get_release_art(artist, album, release_id=release_id)
+        if cached_art:
+            return coverart.resize_url_for_source(cached_art, target_size) if target_size else cached_art
+
+    candidates = []
+
+    if release_id:
+        art = fetch_coverartarchive_art(release_id, size=target_size)
+        if art:
+            candidates.append(art)
+
+    if artist and (album or title):
+        art = fetch_lastfm_album_art(artist, album=album, title=title)
+        if art:
+            candidates.append(art)
+
+    if artist and album:
+        art = fetch_itunes_album_art(artist, album, size=target_size)
+        if art:
+            candidates.append(art)
+        art = fetch_deezer_album_art(artist, album, size=target_size)
+        if art:
+            candidates.append(art)
+
+    if not candidates:
+        return None
+
+    if target_size:
+        candidates = [coverart.resize_url_for_source(c, target_size) for c in candidates]
+
+    # Убираем дубли, сохраняя порядок.
+    unique = list(dict.fromkeys(candidates))
+    unique.sort(key=coverart.estimate_max_size, reverse=True)
+    best = unique[0]
+
+    if release_id or (artist and album):
+        cache.set_release_art(artist, album, best, release_id=release_id)
+    return best
+
 _VIDEO_JUNK_PATTERNS = [
     r"(?i)\s*[\(\[]\s*official\s+(?:music\s+)?video\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*official\s+audio\s*[\)\]]",
@@ -1162,7 +1419,10 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
             meta["apple_music_url"] = itunes_meta["apple_music_url"]
             sl_meta = resolve_song_link(itunes_meta["apple_music_url"])
             if sl_meta:
-                for k in ("deezer_id", "spotify_url", "isrc"):
+                sl_dz = sl_meta.get("deezer_id")
+                if sl_dz and validate_deezer_track(sl_dz, meta.get("title") or clean_title, meta.get("artist") or artist, meta.get("duration") or duration):
+                    meta["deezer_id"] = sl_dz
+                for k in ("spotify_url", "isrc"):
                     if sl_meta.get(k) and not meta.get(k):
                         meta[k] = sl_meta[k]
 
@@ -1171,13 +1431,28 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
         from sources.deezer import search_deezer_track
         search_art = meta.get("artist") or artist
         search_tit = meta.get("title") or clean_title
-        dz_id = search_deezer_track(search_art, search_tit, duration=meta.get("duration") or duration)
+        dz_id = search_deezer_track(
+            search_art,
+            search_tit,
+            duration=meta.get("duration") or duration,
+            album=meta.get("album"),
+        )
         if not dz_id and re.search(r"[\(\[]", search_tit):
             search_tit_clean = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", search_tit).strip()
             if search_tit_clean and search_tit_clean.lower() != search_tit.lower():
-                dz_id = search_deezer_track(search_art, search_tit_clean, duration=meta.get("duration") or duration)
+                dz_id = search_deezer_track(
+                    search_art,
+                    search_tit_clean,
+                    duration=meta.get("duration") or duration,
+                    album=meta.get("album"),
+                )
         if not dz_id and search_art != artist:
-            dz_id = search_deezer_track(artist, clean_title, duration=meta.get("duration") or duration)
+            dz_id = search_deezer_track(
+                artist,
+                clean_title,
+                duration=meta.get("duration") or duration,
+                album=meta.get("album"),
+            )
         if dz_id:
             meta["deezer_id"] = dz_id
 
@@ -1202,9 +1477,176 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
                 if tit_clean and tit_clean.lower() != meta["title"].lower():
                     mb_data = search_musicbrainz_by_text(meta["artist"], tit_clean)
         if mb_data:
-            for key in ("album", "year", "track_number", "track_total", "album_artist"):
+            for key in ("album", "year", "track_number", "track_total", "album_artist", "album_art", "_mb_release_id"):
                 if mb_data.get(key):
                     meta[key] = mb_data[key]
+
+    # Каскадный поиск студийной квадратной обложки высокого разрешения,
+    # если обложка отсутствует или осталась превьюшкой с YouTube (i.ytimg.com)
+    curr_art = meta.get("album_art") or ""
+    if not curr_art or "ytimg.com" in curr_art:
+        best_art = fetch_best_cover_art(
+            artist=meta.get("artist") or artist,
+            album=meta.get("album") or "",
+            title=meta.get("title") or clean_title,
+            release_id=meta.get("_mb_release_id") or ""
+        )
+        if best_art:
+            meta["album_art"] = best_art
+
+    try:
+        genres = fetch_lastfm_genres(meta.get("artist", ""), meta.get("title", ""))
+        if genres:
+            meta["genre"] = genres
+    except Exception:
+        pass
+
+    return sanitize_metadata_strings(meta)
+
+def resolve_soundcloud_track(url: str) -> Optional[dict]:
+    """
+    Первоклассное извлечение метаданных для треков с SoundCloud:
+    1. Быстрое получение oEmbed (заголовок, автор, обложка)
+    2. Очистка промо-тегов ([FREE DL], [OUT NOW] и т.д.) и разделение Артист - Название
+    3. Кроссплатформенный поиск студийного релиза (iTunes -> Songlink -> Deezer -> MusicBrainz)
+    4. Каскадный подбор студийной Ultra-HD обложки либо оригинальной обложки SoundCloud (-original.jpg)
+    5. Тегирование жанров через Last.fm
+    """
+    clean_url = unshorten_url(url.strip())
+    raw_title = ""
+    author_name = ""
+    thumb_url = None
+
+    try:
+        r = httpx.get(
+            "https://soundcloud.com/oembed",
+            params={"format": "json", "url": clean_url},
+            headers={"User-Agent": USER_AGENT},
+            timeout=4.0
+        )
+        if r.status_code == 200:
+            data = r.json()
+            raw_title = data.get("title", "") or ""
+            author_name = data.get("author_name", "") or ""
+            thumb_url = data.get("thumbnail_url")
+    except Exception:
+        pass
+
+    if not raw_title and not author_name:
+        m = re.search(r"soundcloud\.com/([^/?#]+)/([^/?#]+)", clean_url)
+        if m:
+            author_name = m.group(1).replace("-", " ").title()
+            raw_title = m.group(2).replace("-", " ")
+
+    if not raw_title:
+        return None
+
+    if author_name and raw_title.lower().endswith(f" by {author_name.lower()}"):
+        raw_title = raw_title[:-len(f" by {author_name}")].strip()
+
+    SC_JUNK_PATTERNS = [
+        r"(?i)\s*[\(\[]\s*(?:free\s+(?:dl|download)|out\s+now|buy\s+link|stream\s+now|clip|preview|teaser|premiere|première|exclusive|original\s+mix|free\s+track)\s*[\)\]]",
+        r"(?i)\s*\|?\s*(?:free\s+(?:dl|download)|out\s+now)\s*$",
+    ]
+    for pat in SC_JUNK_PATTERNS:
+        raw_title = re.sub(pat, "", raw_title)
+    raw_title = re.sub(r"\s+", " ", raw_title).strip()
+
+    artist, clean_title = clean_youtube_title_and_artist(raw_title, author_name)
+    if not clean_title:
+        clean_title = raw_title
+    if not artist:
+        artist = author_name or "Unknown Artist"
+
+    best_sc_thumb = thumb_url
+    if thumb_url and "-t500x500." in thumb_url:
+        best_sc_thumb = thumb_url.replace("-t500x500.", "-original.")
+
+    meta = {
+        "title": clean_title,
+        "artist": artist,
+        "album": None,
+        "album_artist": artist,
+        "album_art": best_sc_thumb,
+        "year": None,
+        "track_number": None,
+        "track_total": None,
+        "duration": None,
+        "explicit": False,
+        "deezer_id": None,
+        "isrc": None,
+        "spotify_url": None,
+        "apple_music_url": None,
+        "soundcloud_url": clean_url,
+        "direct_url": clean_url,
+    }
+
+    itunes_meta = fetch_itunes_metadata(artist=artist, title=clean_title)
+    if not itunes_meta and re.search(r"[\(\[]", clean_title):
+        clean_no_br = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", clean_title).strip()
+        if clean_no_br and clean_no_br.lower() != clean_title.lower():
+            itunes_meta = fetch_itunes_metadata(artist=artist, title=clean_no_br)
+
+    if itunes_meta:
+        for k in ("title", "artist", "album", "album_artist", "year", "track_number", "track_total", "album_art", "duration"):
+            if itunes_meta.get(k):
+                meta[k] = itunes_meta[k]
+        if itunes_meta.get("apple_music_url"):
+            meta["apple_music_url"] = itunes_meta["apple_music_url"]
+            sl_meta = resolve_song_link(itunes_meta["apple_music_url"])
+            if sl_meta:
+                sl_dz = sl_meta.get("deezer_id")
+                if sl_dz and validate_deezer_track(sl_dz, meta.get("title") or clean_title, meta.get("artist") or artist, meta.get("duration")):
+                    meta["deezer_id"] = sl_dz
+                for k in ("spotify_url", "isrc"):
+                    if sl_meta.get(k) and not meta.get(k):
+                        meta[k] = sl_meta[k]
+
+    if not meta.get("deezer_id"):
+        from sources.deezer import search_deezer_track
+        search_art = meta.get("artist") or artist
+        search_tit = meta.get("title") or clean_title
+        dz_id = search_deezer_track(search_art, search_tit, duration=meta.get("duration"), album=meta.get("album"))
+        if not dz_id and re.search(r"[\(\[]", search_tit):
+            search_tit_clean = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", search_tit).strip()
+            if search_tit_clean and search_tit_clean.lower() != search_tit.lower():
+                dz_id = search_deezer_track(search_art, search_tit_clean, duration=meta.get("duration"), album=meta.get("album"))
+        if not dz_id and search_art != artist:
+            dz_id = search_deezer_track(artist, clean_title, duration=meta.get("duration"), album=meta.get("album"))
+        if dz_id:
+            meta["deezer_id"] = dz_id
+
+    if meta.get("deezer_id"):
+        dz = fetch_deezer_metadata(meta["deezer_id"])
+        if dz:
+            for k, v in dz.items():
+                if v and not meta.get(k):
+                    meta[k] = v
+
+    album = meta.get("album")
+    album_artist = meta.get("album_artist") or meta.get("artist") or ""
+    if is_compilation_album(album, album_artist) or not album:
+        isrc = meta.get("isrc")
+        mb_data = None
+        if isrc:
+            mb_data = fetch_musicbrainz_by_isrc(isrc, meta.get("artist", ""))
+        if not mb_data and meta.get("artist") and meta.get("title"):
+            mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
+        if mb_data:
+            for key in ("album", "year", "track_number", "track_total", "album_artist", "album_art", "_mb_release_id"):
+                if mb_data.get(key):
+                    meta[key] = mb_data[key]
+
+    curr_art = meta.get("album_art") or ""
+    if not curr_art or "sndcdn.com" in curr_art:
+        best_art = fetch_best_cover_art(
+            artist=meta.get("artist") or artist,
+            album=meta.get("album") or "",
+            title=meta.get("title") or clean_title,
+            release_id=meta.get("_mb_release_id") or ""
+        )
+        if best_art:
+            meta["album_art"] = best_art
 
     try:
         genres = fetch_lastfm_genres(meta.get("artist", ""), meta.get("title", ""))
@@ -1243,6 +1685,11 @@ def get_track_metadata(url: str) -> dict:
         if yt_meta and yt_meta.get("title") and yt_meta.get("artist"):
             return sanitize_metadata_strings(yt_meta)
 
+    if "soundcloud.com" in url_lower or "on.soundcloud.com" in url_lower:
+        sc_meta = resolve_soundcloud_track(url)
+        if sc_meta and sc_meta.get("title") and sc_meta.get("artist"):
+            return sanitize_metadata_strings(sc_meta)
+
     if "last.fm" in url_lower:
         lfm_meta = resolve_lastfm_track(url)
         if lfm_meta and lfm_meta.get("title") and lfm_meta.get("artist"):
@@ -1269,11 +1716,21 @@ def get_track_metadata(url: str) -> dict:
     artist_query = info.get("artist") or ""
     title_query = info.get("title") or ""
     
-    # Если Deezer ID не найден через song.link, пробуем прямой поиск по артисту и названию
+    # Валидируем Deezer ID, полученный от song.link (отсеиваем мусорные / чужие треки)
+    if info.get("deezer_id"):
+        if not validate_deezer_track(info["deezer_id"], title_query, artist_query, info.get("duration")):
+            info["deezer_id"] = None
+
+    # Если Deezer ID не найден или не прошел валидацию, пробуем прямой поиск по артисту и названию
     if not info.get("deezer_id") and artist_query and title_query:
         try:
             from sources.deezer import search_deezer_track
-            found_dz_id = search_deezer_track(artist_query, title_query)
+            found_dz_id = search_deezer_track(
+                artist_query,
+                title_query,
+                duration=info.get("duration"),
+                album=info.get("album"),
+            )
             if found_dz_id:
                 info["deezer_id"] = found_dz_id
         except Exception:
@@ -1287,13 +1744,14 @@ def get_track_metadata(url: str) -> dict:
     
     itunes_meta = fetch_itunes_metadata(artist=artist_query, title=title_query, isrc=isrc_query)
     
-    # Если song.link не связал трек со стримингами (например, ссылка с Я.Музыки или SoundCloud),
-    # а в iTunes нашелся трек - пробуем отправить Apple Music URL в song.link для поиска Deezer/Spotify связей
+    # Если song.link не связал трек со стримингами, а в iTunes нашелся трек:
     if not info.get("deezer_id") and itunes_meta and itunes_meta.get("apple_music_url"):
         apple_sl = resolve_song_link(itunes_meta["apple_music_url"])
         if apple_sl and apple_sl.get("deezer_id"):
-            info["deezer_id"] = apple_sl["deezer_id"]
-            dz_meta = fetch_deezer_metadata(info["deezer_id"])
+            cand_dz = apple_sl["deezer_id"]
+            if validate_deezer_track(cand_dz, info.get("title") or title_query, info.get("artist") or artist_query, info.get("duration")):
+                info["deezer_id"] = cand_dz
+                dz_meta = fetch_deezer_metadata(info["deezer_id"])
     
     discogs_meta = None
     if config.DISCOGS_TOKEN and artist_query and title_query:
@@ -1335,6 +1793,19 @@ def get_track_metadata(url: str) -> dict:
             if val:
                 info[key] = val
         info.pop("_score", None)
+
+    # Каскадный поиск студийной квадратной обложки высокого разрешения,
+    # если обложка отсутствует или осталась превьюшкой с YouTube (i.ytimg.com)
+    curr_art = info.get("album_art") or ""
+    if not curr_art or "ytimg.com" in curr_art:
+        best_art = fetch_best_cover_art(
+            artist=info.get("artist") or "",
+            album=info.get("album") or "",
+            title=info.get("title") or "",
+            release_id=info.get("_mb_release_id") or ""
+        )
+        if best_art:
+            info["album_art"] = best_art
         
     # Получаем жанры из Last.fm
     if info.get("artist") and info.get("title"):
@@ -1419,7 +1890,10 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
         if apple_url:
             sl_meta = resolve_song_link(apple_url)
             if sl_meta:
-                for k in ("deezer_id", "spotify_url", "youtube_music_url", "isrc"):
+                sl_dz = sl_meta.get("deezer_id")
+                if sl_dz and validate_deezer_track(sl_dz, meta.get("title") or title, meta.get("artist") or artist, meta.get("duration") or duration):
+                    meta["deezer_id"] = sl_dz
+                for k in ("spotify_url", "youtube_music_url", "isrc"):
                     if sl_meta.get(k) and not meta.get(k):
                         meta[k] = sl_meta[k]
                 if sl_meta.get("duration") and not meta.get("duration"):
@@ -1429,7 +1903,12 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
         if not meta.get("deezer_id") and meta.get("artist") and meta.get("title"):
             try:
                 from sources.deezer import search_deezer_track
-                dz_id = search_deezer_track(meta["artist"], meta["title"])
+                dz_id = search_deezer_track(
+                    meta["artist"],
+                    meta["title"],
+                    duration=meta.get("duration") or duration,
+                    album=meta.get("album") or album,
+                )
                 if dz_id:
                     meta["deezer_id"] = dz_id
             except Exception:
@@ -1515,9 +1994,22 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
         if not mb_data and meta.get("artist") and meta.get("title"):
             mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
         if mb_data:
-            for key in ("album", "year", "track_number", "track_total", "album_artist"):
+            for key in ("album", "year", "track_number", "track_total", "album_artist", "album_art", "_mb_release_id"):
                 if mb_data.get(key):
                     meta[key] = mb_data[key]
+
+    # Каскадный поиск студийной квадратной обложки высокого разрешения,
+    # если обложка отсутствует или осталась превьюшкой с YouTube (i.ytimg.com)
+    curr_art = meta.get("album_art") or ""
+    if not curr_art or "ytimg.com" in curr_art:
+        best_art = fetch_best_cover_art(
+            artist=meta.get("artist") or "",
+            album=meta.get("album") or "",
+            title=meta.get("title") or "",
+            release_id=meta.get("_mb_release_id") or ""
+        )
+        if best_art:
+            meta["album_art"] = best_art
 
     # 4. Получение жанров из Last.fm
     try:

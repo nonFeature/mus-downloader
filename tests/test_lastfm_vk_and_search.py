@@ -237,6 +237,8 @@ def test_download_track_by_link_with_direct_vk_stream(tmp_path):
     }
 
     with patch("core.metadata.get_track_metadata", return_value=mock_meta), \
+         patch("core.search_deezer_track", return_value=None), \
+         patch("core.search_soulseek", return_value=[]), \
          patch("httpx.stream") as mock_stream, \
          patch("core.tagger.apply_metadata") as mock_tagger:
         mock_response = MagicMock()

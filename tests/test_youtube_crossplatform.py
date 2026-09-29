@@ -276,3 +276,43 @@ def test_search_deezer_track_rejects_unrelated_song_by_same_artist():
         found = search_deezer_track("Death Grips", "Takyon", duration=169.0)
         assert found is None
 
+
+def test_fetch_best_cover_art_cascade():
+    from core.metadata import fetch_best_cover_art
+
+    # 1. Fallback to Last.fm if Cover Art Archive has no art
+    with patch("core.metadata.fetch_coverartarchive_art", return_value=None), \
+         patch("core.metadata.fetch_lastfm_album_art", return_value="https://lastfm/cover.jpg") as mock_lfm:
+        art = fetch_best_cover_art(artist="Death Grips", album="Exmilitary", title="Takyon")
+        assert art == "https://lastfm/cover.jpg"
+        mock_lfm.assert_called_once()
+
+    # 2. Prefer Cover Art Archive if available
+    with patch("core.metadata.fetch_coverartarchive_art", return_value="https://caa/front.jpg"):
+        art = fetch_best_cover_art(artist="Death Grips", album="Exmilitary", release_id="rel-123")
+        assert art == "https://caa/front.jpg"
+
+
+def test_resolve_youtube_track_replaces_ytimg_with_studio_cover():
+    mock_oembed = MagicMock()
+    mock_oembed.status_code = 200
+    mock_oembed.json.return_value = {
+        "title": "Death Grips - Takyon (Death Yon)",
+        "author_name": "Death Grips",
+        "thumbnail_url": "https://i.ytimg.com/vi/89F5fpvwPr0/hqdefault.jpg"
+    }
+
+    with patch("httpx.get", return_value=mock_oembed), \
+         patch("ytmusicapi.YTMusic.get_song", side_effect=Exception("No ytmusic")), \
+         patch("core.metadata.fetch_itunes_metadata", return_value=None), \
+         patch("core.sources.deezer.search_deezer_track", return_value=None), \
+         patch("core.metadata.search_musicbrainz_by_text", return_value=None), \
+         patch("core.metadata.fetch_best_cover_art", return_value="https://lastfm.freetls.fastly.net/831e96df3afd4777c7ac562537bdb356.png") as mock_best_art:
+
+        res = resolve_youtube_track("https://youtu.be/89F5fpvwPr0")
+        assert res is not None
+        assert res["album_art"] == "https://lastfm.freetls.fastly.net/831e96df3afd4777c7ac562537bdb356.png"
+        assert "ytimg.com" not in res["album_art"]
+        mock_best_art.assert_called_once()
+
+

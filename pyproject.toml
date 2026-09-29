@@ -22,6 +22,7 @@ dependencies = [
     "aiogram>=3.17.0",
     "yt-dlp-ejs>=0.8.0",
     "rich>=13.0.0",
+    "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]

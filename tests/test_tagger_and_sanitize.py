@@ -1,12 +1,15 @@
 import subprocess
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 
-from metadata import sanitize_metadata_strings
-from tagger import apply_metadata
+import core
+from core.metadata import sanitize_metadata_strings
+from core.tagger import apply_metadata, process_cover_art_to_square, download_cover_art
+from PIL import Image, ImageDraw
+import io
 
 # 1x1 transparent GIF/JPEG bytes for testing cover art
 TINY_JPEG = (
@@ -61,7 +64,7 @@ def test_flac_tagging_with_cover_art(tmp_path: Path):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     assert flac_file.exists()
 
-    with patch("tagger.download_cover_art", return_value=(TINY_JPEG, "image/jpeg")):
+    with patch("core.tagger.download_cover_art", return_value=(TINY_JPEG, "image/jpeg")):
         apply_metadata(
             file_path=flac_file,
             artist="Calvin Harris",
@@ -106,7 +109,7 @@ def test_mp3_tagging_with_cover_art(tmp_path: Path):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     assert mp3_file.exists()
 
-    with patch("tagger.download_cover_art", return_value=(TINY_JPEG, "image/jpeg")):
+    with patch("core.tagger.download_cover_art", return_value=(TINY_JPEG, "image/jpeg")):
         apply_metadata(
             file_path=mp3_file,
             artist="Calvin Harris",
@@ -129,3 +132,60 @@ def test_mp3_tagging_with_cover_art(tmp_path: Path):
     assert len(apic) == 1
     assert apic[0].type == 3
     assert apic[0].data == TINY_JPEG
+
+
+def test_process_cover_art_to_square_wide_with_black_bars():
+    # Create 480x360 image (YouTube 4:3) with black bars on sides (0-59 and 421-479)
+    img = Image.new("RGB", (480, 360), color="black")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([60, 0, 420, 360], fill="red")
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    raw_bytes = buf.getvalue()
+
+    res_bytes, mime = process_cover_art_to_square(raw_bytes)
+    assert mime == "image/jpeg"
+
+    out_img = Image.open(io.BytesIO(res_bytes))
+    w, h = out_img.size
+    assert w == h
+    assert w >= 300
+
+
+def test_process_cover_art_to_square_already_square():
+    img = Image.new("RGB", (300, 300), color="blue")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+
+    res_bytes, mime = process_cover_art_to_square(raw_bytes)
+    assert mime == "image/jpeg"
+
+    out_img = Image.open(io.BytesIO(res_bytes))
+    assert out_img.size == (300, 300)
+
+
+def test_download_cover_art_youtube_probes_maxres():
+    with patch("core.tagger.httpx.get") as mock_get:
+        # Candidate URLs include maxresdefault.jpg
+        def side_effect(url, **kwargs):
+            m = MagicMock()
+            if "maxresdefault.jpg" in url:
+                m.status_code = 200
+                img = Image.new("RGB", (1280, 720), color="purple")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG")
+                m.content = buf.getvalue()
+            else:
+                m.status_code = 404
+            return m
+
+        mock_get.side_effect = side_effect
+        raw, mime = download_cover_art("https://i.ytimg.com/vi/89F5fpvwPr0/hqdefault.jpg")
+
+        assert raw is not None
+        assert mime == "image/jpeg"
+        out_img = Image.open(io.BytesIO(raw))
+        assert out_img.size[0] == out_img.size[1]
+

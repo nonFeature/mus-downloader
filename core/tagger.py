@@ -8,21 +8,55 @@ from mutagen.id3 import ID3, APIC
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 
-def download_cover_art(url: str) -> tuple[bytes | None, str | None]:
-    """Скачивает обложку по URL и возвращает (bytes, mime_type)"""
+from . import coverart
+
+
+def process_cover_art_to_square(raw_bytes: bytes, target_size: int = 0) -> tuple[bytes, str]:
+    """
+    Обеспечивает квадратный формат (1:1) обложки для всех музыкальных плееров:
+    - Обнаруживает и срезает черные/однородные поля (letterbox/pillarbox).
+    - Если изображение не квадратное (например, превью YouTube 16:9 или 4:3),
+      аккуратно кадрирует его в квадрат 1:1 по центру.
+    - При ``target_size`` > 0 дополнительно масштабирует до нужного разрешения
+      (1400 для FLAC, 768 для MP3).
+    - Сохраняет в высоком качестве (JPEG, quality=95).
+    """
+    return coverart.fit_cover_art(raw_bytes, target_size)
+
+
+def download_cover_art(url: str, target_size: int = 0) -> tuple[bytes | None, str | None]:
+    """
+    Скачивает обложку по URL и приводит её к квадрату нужного разрешения.
+
+    ``target_size`` подставляется прямо в ссылку у CDN, которые это умеют
+    (Deezer, iTunes, Cover Art Archive) — это нативный размер, а не апскейл.
+    Для YouTube отдельно перебираются превью от maxresdefault вниз.
+    """
     if not url:
         return None, None
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-    try:
-        resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=15.0)
-        if resp.status_code == 200:
-            mime = resp.headers.get("content-type", "image/jpeg")
-            return resp.content, mime
-    except Exception as e:
-        print(f"[!] Не удалось скачать обложку: {e}")
-    return None, None
+
+    primary = coverart.resize_url_for_source(url, target_size) if target_size else url
+    candidates = [primary] + [u for u in coverart.upscale_youtube_thumbnail(url) if u != primary]
+
+    best: tuple[int, bytes, str] | None = None
+    for target_url in candidates:
+        data, mime = coverart.download_image(target_url)
+        if not data:
+            continue
+        fitted, fitted_mime = coverart.fit_cover_art(data, target_size)
+        measured = coverart.probe_image_size(fitted)
+        score = min(measured) if measured else 0
+        # Точное попадание в целевой размер — приоритетнее всего остального.
+        score += 100000 if (target_size and measured and min(measured) == target_size) else 0
+        if best is None or score > best[0]:
+            best = (score, fitted, fitted_mime or mime or "image/jpeg")
+        # Точное попадание в целевой размер — дальше искать незачем.
+        if target_size and measured and min(measured) == target_size:
+            break
+
+    if best is None:
+        return None, None
+    return best[1], best[2]
 
 def apply_metadata(
     file_path: Path,
@@ -38,17 +72,21 @@ def apply_metadata(
     source_quality: str | None = None,
     compilation: bool = False,
     genre: str | None = None,
+    cover_size: int = 0,
 ):
     """
     Записывает метаданные в аудиофайл (FLAC, MP3 или M4A).
     Если передан album_art_url, обложка скачивается и вшивается в файл.
+    ``cover_size`` — целевое разрешение обложки в пикселях (0 = без ресайза).
     """
     if not file_path.exists():
         print(f"[!] Файл не найден: {file_path}")
         return
 
     suffix = file_path.suffix.lower()
-    art_bytes, art_mime = download_cover_art(album_art_url) if album_art_url else (None, None)
+    art_bytes, art_mime = (
+        download_cover_art(album_art_url, cover_size) if album_art_url else (None, None)
+    )
     has_art = art_bytes is not None
 
     try:

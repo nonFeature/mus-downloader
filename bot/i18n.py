@@ -117,6 +117,7 @@ _STRINGS: dict[str, dict[str, str]] = {
 
 <i>Ищу, откуда скачать...</i>""",
         "status.uploading": "{emoji_upload} Отправляю в Telegram...",
+        "status.from_cache": "{emoji_bolt} <b>Отдаю из кэша</b> — мгновенно...",
         "status.unknown_cmd": "{emoji_ask} Неизвестная команда. Что умею — в /start.",
         "status.unsupported_content": "{emoji_bulb} Пришли ссылку на трек или его название текстом.",
 
@@ -220,6 +221,7 @@ No matches. Try another spelling or send a direct link from Spotify, Apple Music
 
 <i>Checking sources...</i>""",
         "status.uploading": "{emoji_upload} Sending to Telegram...",
+        "status.from_cache": "{emoji_bolt} <b>Sending from cache</b> — instant...",
         "status.unknown_cmd": "{emoji_ask} Unknown command. See /start for what I do.",
         "status.unsupported_content": "{emoji_bulb} Send a track link or its title as text.",
 

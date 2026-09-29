@@ -237,6 +237,7 @@ def test_core_flac_uses_slsk_user_without_slskd_url(tmp_path):
     with patch.object(config, "SLSKD_URL", ""), \
          patch.object(config, "SLSK_USER", "test_user"), \
          patch("core.metadata.resolve_query_metadata", return_value=mock_meta), \
+         patch("core.search_deezer_track", return_value=None), \
          patch("core.search_soulseek", return_value=slsk_cand) as mock_search, \
          patch("core.download_soulseek_track", return_value=dummy_flac) as mock_dl, \
          patch("core.tagger.apply_metadata"):

@@ -233,6 +233,8 @@ def test_core_direct_soundcloud_download_bypasses_youtube_music(tmp_path):
     }
 
     with patch("core.metadata.get_track_metadata", return_value=mock_meta), \
+         patch("core.search_deezer_track", return_value=None), \
+         patch("core.search_soulseek", return_value=[]), \
          patch("core.download_soundcloud_track", return_value=dummy_sc_file) as mock_sc, \
          patch("core.download_youtube_track") as mock_yt, \
          patch("core.tagger.apply_metadata") as mock_tagger:

@@ -48,6 +48,7 @@ import config
 import core
 from core import metadata, tagger
 from .emoji import emoji_kwargs, set_custom_emoji_enabled, strip_html
+from .fileid_cache import get_file_id_cache, is_invalid_file_id_error
 from .i18n import detect_lang, t, t_plain
 from .local_bot_api import LocalBotAPIManager
 from .notifier import StatusNotifier, escape_html, format_status_text
@@ -483,6 +484,59 @@ async def handle_set_search_callback(callback: CallbackQuery):
         pass
 
 
+async def _send_from_file_id_cache(
+    bot: Bot,
+    chat_id: int,
+    meta: Dict[str, Any],
+    quality: str,
+    query_or_url: str,
+    status_msg: Message,
+    lang: str,
+) -> bool:
+    """
+    Пытается отдать трек мгновенно, по сохранённому Telegram file_id.
+
+    Возвращает True, если аудио ушло. False — если в кэше ничего не было
+    либо Telegram признал file_id недействительным (тогда запись удаляется,
+    и вызывающая сторона скачает трек заново).
+    """
+    cache = get_file_id_cache()
+    entry = await asyncio.to_thread(cache.lookup, meta, quality, query_or_url)
+    if not entry:
+        return False
+
+    try:
+        await status_msg.edit_text(
+            t("status.from_cache", lang),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_audio(
+            chat_id=chat_id,
+            audio=entry["file_id"],
+            performer=entry.get("performer") or None,
+            title=entry.get("title") or None,
+            duration=entry.get("duration") or None,
+        )
+    except Exception as cache_err:
+        if is_invalid_file_id_error(cache_err):
+            logger.info(f"file_id устарел, удаляю из кэша: {cache_err}")
+            await asyncio.to_thread(cache.invalidate_key, entry.get("key", ""))
+            return False
+        logger.warning(f"Не удалось отдать из кэша file_id, качаю заново: {cache_err}")
+        return False
+
+    logger.info(f"Трек отдан из кэша file_id: {entry.get('title')} [{quality}]")
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+    return True
+
+
 async def run_download_and_send(
     bot: Bot,
     chat_id: int,
@@ -512,6 +566,13 @@ async def run_download_and_send(
     notifier = StatusNotifier(bot, status_msg, header=header, lang=lang)
 
     try:
+        # 0. Пробуем отдать трек мгновенно по сохранённому file_id: без
+        #    скачивания, без ffmpeg и без загрузки мегабайт в Telegram.
+        if await _send_from_file_id_cache(
+            bot, chat_id, meta, target_quality, query_or_url, status_msg, lang
+        ):
+            return
+
         # 1. Запуск скачивания в отдельном потоке (семафор ограничивает до 3 параллельных).
         # Статус «в очереди» показываем только если все слоты заняты.
         if download_semaphore.locked():
@@ -529,6 +590,9 @@ async def run_download_and_send(
                 dest_dir=task_dir,
                 status_callback=notifier.notify,
                 track_meta=meta,
+                # Дисковый кэш боту не нужен: файл живёт в task_dir и
+                # удаляется сразу после отправки. Повторы отдаёт кэш file_id.
+                reuse_cached_file=False,
             )
 
         if not file_path or not file_path.exists():
@@ -594,7 +658,7 @@ async def run_download_and_send(
         dur_sec = int(round(duration)) if duration and duration > 0 else None
 
         try:
-            await bot.send_audio(
+            sent_message = await bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_input,
                 performer=artist,
@@ -606,7 +670,7 @@ async def run_download_and_send(
             )
         except Exception as send_err:
             logger.warning(f"Ошибка при отправке с миниатюрой, повтор без миниатюры: {send_err}")
-            await bot.send_audio(
+            sent_message = await bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_input,
                 performer=artist,
@@ -614,6 +678,21 @@ async def run_download_and_send(
                 duration=dur_sec,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
+            )
+
+        # 5.1 Запоминаем file_id: повторный запрос этого же трека любому
+        #     пользователю теперь отдаётся мгновенно, без скачивания.
+        cached_file_id = getattr(getattr(sent_message, "audio", None), "file_id", None)
+        if cached_file_id:
+            await asyncio.to_thread(
+                get_file_id_cache().save,
+                cached_file_id,
+                meta,
+                target_quality,
+                query_or_url,
+                performer=artist,
+                title=title,
+                duration=dur_sec or 0,
             )
 
         # 6. Удаление служебного сообщения статуса после успешной отправки
