@@ -198,6 +198,7 @@ def search_deezer_track(artist: str, title: str, duration: Optional[float] = Non
 
     target_query = f"{artist} {title}"
     target_toks = toks(target_query)
+    target_title_toks = toks(title)
     target_vm = _version_markers(target_query)
 
     for query in queries:
@@ -217,6 +218,12 @@ def search_deezer_track(artist: str, title: str, duration: Optional[float] = Non
             for track in data:
                 track_title = track.get("title", "")
                 track_artist = track.get("artist", {}).get("name", "")
+
+                # Кандидат ОБЯЗАТЕЛЬНО должен иметь пересечение по названию трека!
+                c_title_toks = toks(track_title)
+                if target_title_toks and not (target_title_toks & c_title_toks):
+                    continue
+
                 cand_full = f"{track_artist} {track_title}"
                 c_toks = toks(cand_full)
                 

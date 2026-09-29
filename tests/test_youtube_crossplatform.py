@@ -3,7 +3,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from core.sources.youtube import extract_youtube_video_id
-from core.metadata import clean_youtube_title_and_artist, resolve_youtube_track
+from core.metadata import clean_youtube_title_and_artist, resolve_youtube_track, score_text_candidate
+from core.sources.deezer import search_deezer_track
 from core import download_track_by_link
 import config
 
@@ -205,3 +206,73 @@ def test_youtube_link_falls_back_to_direct_youtube_when_others_fail(tmp_path):
         assert mock_yt.call_count == 1
         assert mock_yt.call_args.kwargs.get("direct_url") == "https://www.youtube.com/watch?v=abcdefghijk"
         assert res == dummy_yt
+
+
+def test_resolve_youtube_track_strips_false_ytmusic_stem_marker():
+    mock_oembed = MagicMock()
+    mock_oembed.status_code = 200
+    mock_oembed.json.return_value = {
+        "title": "Death Grips - Takyon (Death Yon)",
+        "author_name": "Death Grips",
+        "thumbnail_url": "https://i.ytimg.com/vi/89F5fpvwPr0/hqdefault.jpg"
+    }
+
+    mock_ytmusic_instance = MagicMock()
+    mock_ytmusic_instance.get_song.return_value = {
+        "videoDetails": {
+            "title": "Takyon (Death Yon) (vocal)",
+            "author": "Death Grips",
+            "lengthSeconds": "169",
+        }
+    }
+
+    mock_mb = {
+        "title": "Takyon (Death Yon)",
+        "artist": "Death Grips",
+        "album": "Exmilitary",
+        "year": "2011",
+        "track_total": 14,
+        "album_artist": "Death Grips",
+    }
+
+    with patch("httpx.get", return_value=mock_oembed), \
+         patch("ytmusicapi.YTMusic", return_value=mock_ytmusic_instance), \
+         patch("core.metadata.fetch_itunes_metadata", return_value=None), \
+         patch("core.sources.deezer.search_deezer_track", return_value=None), \
+         patch("core.metadata.search_musicbrainz_by_text", return_value=mock_mb):
+
+        res = resolve_youtube_track("https://youtu.be/89F5fpvwPr0")
+
+        assert res is not None
+        assert res["title"] == "Takyon (Death Yon)"
+        assert "(vocal)" not in res["title"]
+        assert res["artist"] == "Death Grips"
+        assert res["album"] == "Exmilitary"
+        assert res["year"] == "2011"
+        assert res["duration"] == 169.0
+
+
+def test_score_text_candidate_rejects_unrelated_song_by_same_artist():
+    # If candidate is a different track by the same artist (e.g. Guillotine when searching Takyon),
+    # score must be 0.0 because title tokens do not overlap.
+    score = score_text_candidate("Guillotine", "Death Grips", "Death Grips Takyon", target_title="Takyon")
+    assert score == 0.0
+
+    # If candidate is the correct track, score must be positive
+    score_valid = score_text_candidate("Takyon (Death Yon)", "Death Grips", "Death Grips Takyon", target_title="Takyon")
+    assert score_valid > 0.5
+
+
+def test_search_deezer_track_rejects_unrelated_song_by_same_artist():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "data": [
+            {"id": 124197720, "title": "Houdini", "artist": {"name": "Death Grips"}, "duration": 165}
+        ]
+    }
+
+    with patch("httpx.get", return_value=mock_resp):
+        found = search_deezer_track("Death Grips", "Takyon", duration=169.0)
+        assert found is None
+

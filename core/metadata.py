@@ -603,7 +603,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         "limit": 5
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
+        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(4.5, connect=3.0))
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -627,7 +627,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         print(f"[!] MusicBrainz (Search): {e}")
     return None
 
-def score_text_candidate(cand_title: str, cand_artist: str, target_query: str) -> float:
+def score_text_candidate(cand_title: str, cand_artist: str, target_query: str, target_title: str = "") -> float:
     """
     Оценивает совпадение кандидата с целевым запросом по токенам и штрафует
     за лишние маркеры версий (ремиксы, каверы, караоке, лайвы).
@@ -637,6 +637,14 @@ def score_text_candidate(cand_title: str, cand_artist: str, target_query: str) -
     c_toks = toks(f"{cand_artist} {cand_title}")
     if not q_toks:
         return 0.0
+
+    # Кандидат ОБЯЗАТЕЛЬНО должен иметь пересечение по названию трека!
+    # Иначе другая песня того же исполнителя получает >60% совпадения только за счет имени артиста.
+    if target_title:
+        t_tit_toks = toks(target_title)
+        c_tit_toks = toks(cand_title)
+        if t_tit_toks and not (t_tit_toks & c_tit_toks):
+            return 0.0
         
     overlap = len(q_toks & c_toks) / len(q_toks)
     
@@ -687,7 +695,7 @@ def fetch_itunes_metadata(artist: str = "", title: str = "", isrc: str = "") -> 
                 target_query = f"{artist} {title}"
                 best_score = -1.0
                 for track in results:
-                    s = score_text_candidate(track.get("trackName", ""), track.get("artistName", ""), target_query)
+                    s = score_text_candidate(track.get("trackName", ""), track.get("artistName", ""), target_query, target_title=title)
                     if s > best_score:
                         best_score = s
                         best_track = track
@@ -950,9 +958,9 @@ _VIDEO_JUNK_PATTERNS = [
     r"(?i)\s*[\(\[]\s*official\s+visualizer\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*visualizer\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*official\s+hd\s+(?:music\s+)?video\s*[\)\]]",
-    r"(?i)\s*[\(\[]\s*official\s+video\s+remastered\s*[\)\]]",
-    r"(?i)\s*[\(\[]\s*remastered\s*(?:\d{4})?\s*[\)\]]",
-    r"(?i)\s*[\(\[]\s*4k(?:\s+remastered|\s+uhd)?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*official\s+video\s+remaster(?:ed)?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*remaster(?:ed)?\s*(?:\d{4})?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*4k(?:\s+remaster(?:ed)?|\s+uhd)?\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*hd\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*audio\s*[\)\]]",
     r"(?i)\s*[\(\[]\s*lyric\s+video\s*[\)\]]",
@@ -1025,15 +1033,31 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
     duration = None
     thumb_url = None
 
-    # 1. Сначала пробуем ytmusicapi
+    # 1. Быстрый и официальный YouTube oEmbed (отражает реальный заголовок видео на странице)
+    oembed_title = ""
+    oembed_channel = ""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        r = httpx.get(oembed_url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
+        if r.status_code == 200:
+            data = r.json()
+            oembed_title = data.get("title", "")
+            oembed_channel = data.get("author_name", "")
+            thumb_url = data.get("thumbnail_url")
+    except Exception:
+        pass
+
+    # 2. YouTube Music API (получение точной длительности, обложки высокого разрешения и метаданных)
+    yt_title = ""
+    yt_channel = ""
     try:
         from ytmusicapi import YTMusic
         yt = YTMusic()
         song_data = yt.get_song(video_id)
         if song_data and "videoDetails" in song_data:
             vd = song_data["videoDetails"]
-            raw_title = vd.get("title", "")
-            channel_name = vd.get("author", "")
+            yt_title = vd.get("title", "")
+            yt_channel = vd.get("author", "")
             if vd.get("lengthSeconds"):
                 try:
                     duration = float(vd["lengthSeconds"])
@@ -1045,21 +1069,8 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
     except Exception:
         pass
 
-    # 2. Фолбек на быстрый и стабильный YouTube oEmbed
-    if not raw_title:
-        try:
-            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-            r = httpx.get(oembed_url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
-            if r.status_code == 200:
-                data = r.json()
-                raw_title = data.get("title", "")
-                channel_name = data.get("author_name", "")
-                thumb_url = data.get("thumbnail_url")
-        except Exception:
-            pass
-
-    # 3. Фолбек на yt-dlp metadata
-    if not raw_title:
+    # 3. Фолбек на yt-dlp metadata если oEmbed и YTMusic не дали результатов
+    if not oembed_title and not yt_title:
         try:
             import yt_dlp
             from sources.ytdlp_opts import js_runtime_opts
@@ -1068,12 +1079,37 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                 if info:
-                    raw_title = info.get("track") or info.get("title") or ""
-                    channel_name = info.get("artist") or info.get("uploader") or info.get("channel") or ""
+                    oembed_title = info.get("track") or info.get("title") or ""
+                    oembed_channel = info.get("artist") or info.get("uploader") or info.get("channel") or ""
                     duration = info.get("duration")
                     thumb_url = info.get("thumbnail")
         except Exception:
             pass
+
+    # Фильтрация ложных стем/версионных меток:
+    # YouTube Music Content ID иногда подменяет аудиодорожку видео на внутренний стем/ассет (например, "Takyon (vocal)" вместо оригинального трека)
+    STEM_MARKERS = r"(?i)\s*[\(\[]\s*(?:vocal|vocals|acapella|a\s*cappella|instrumental|karaoke|stems?|isolated\s+vocal|backing\s+track)\s*[\)\]]"
+    if yt_title and re.search(STEM_MARKERS, yt_title):
+        if not (oembed_title and re.search(STEM_MARKERS, oembed_title)):
+            yt_title = re.sub(STEM_MARKERS, "", yt_title).strip()
+
+    # Выбор наилучшего заголовка и артиста
+    if oembed_title:
+        has_artist_separator = any(sep in oembed_title for sep in (" - ", " – ", " — ", " | "))
+        o_art, o_tit = clean_youtube_title_and_artist(oembed_title, oembed_channel)
+        
+        if has_artist_separator and o_art and o_tit and not o_art.lower().endswith(" - topic"):
+            raw_title = oembed_title
+            channel_name = o_art
+        elif yt_title and yt_channel:
+            raw_title = yt_title
+            channel_name = yt_channel
+        else:
+            raw_title = oembed_title
+            channel_name = yt_channel or oembed_channel
+    else:
+        raw_title = yt_title
+        channel_name = yt_channel
 
     if not raw_title:
         return None
@@ -1110,7 +1146,11 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
 
     # Поиск по другим платформам (iTunes -> Songlink -> Deezer -> MusicBrainz -> Last.fm)
     itunes_meta = fetch_itunes_metadata(artist=artist, title=clean_title)
-    if not itunes_meta and (" feat." in clean_title.lower() or " ft." in clean_title.lower()):
+    if not itunes_meta and re.search(r"[\(\[]", clean_title):
+        title_no_brackets = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", clean_title).strip()
+        if title_no_brackets and title_no_brackets.lower() != clean_title.lower():
+            itunes_meta = fetch_itunes_metadata(artist=artist, title=title_no_brackets)
+    elif not itunes_meta and (" feat." in clean_title.lower() or " ft." in clean_title.lower()):
         title_no_feat = re.sub(r"(?i)\s*[\(\[]?\s*f(?:ea)?t\.?[^\)\]]*[\)\]]?", "", clean_title).strip()
         itunes_meta = fetch_itunes_metadata(artist=artist, title=title_no_feat)
 
@@ -1132,6 +1172,10 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
         search_art = meta.get("artist") or artist
         search_tit = meta.get("title") or clean_title
         dz_id = search_deezer_track(search_art, search_tit, duration=meta.get("duration") or duration)
+        if not dz_id and re.search(r"[\(\[]", search_tit):
+            search_tit_clean = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", search_tit).strip()
+            if search_tit_clean and search_tit_clean.lower() != search_tit.lower():
+                dz_id = search_deezer_track(search_art, search_tit_clean, duration=meta.get("duration") or duration)
         if not dz_id and search_art != artist:
             dz_id = search_deezer_track(artist, clean_title, duration=meta.get("duration") or duration)
         if dz_id:
@@ -1153,6 +1197,10 @@ def resolve_youtube_track(url: str) -> Optional[dict]:
             mb_data = fetch_musicbrainz_by_isrc(isrc, meta.get("artist", ""))
         if not mb_data and meta.get("artist") and meta.get("title"):
             mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
+            if not mb_data and re.search(r"[\(\[]", meta["title"]):
+                tit_clean = re.sub(r"(?i)\s*[\(\[][^\)\]]+[\)\]]", "", meta["title"]).strip()
+                if tit_clean and tit_clean.lower() != meta["title"].lower():
+                    mb_data = search_musicbrainz_by_text(meta["artist"], tit_clean)
         if mb_data:
             for key in ("album", "year", "track_number", "track_total", "album_artist"):
                 if mb_data.get(key):
