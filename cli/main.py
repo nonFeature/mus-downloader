@@ -172,8 +172,8 @@ def main():
         help="Ignore the local cache and download the track again"
     )
     parser.add_argument(
-        "--cache", dest="cache_action", choices=["info", "clear"], default=None,
-        help="Show local cache statistics or clear it, then exit"
+        "--cache", dest="cache_action", choices=["info", "clear", "prune"], default=None,
+        help="Show local cache statistics, clear it, or drop files unused for too long"
     )
 
     args = parser.parse_args()
@@ -186,12 +186,23 @@ def main():
         if args.cache_action == "clear":
             removed = fc.clear()
             print_info(f"Кэш очищен, удалено файлов: {removed}")
+        elif args.cache_action == "prune":
+            days = fc.max_age_days()
+            removed = fc.prune_expired()
+            if days <= 0:
+                print_info("Очистка по возрасту отключена (FILE_CACHE_MAX_AGE_DAYS=0).")
+            else:
+                print_info(f"Удалено файлов без запросов дольше {days} дн.: {removed}")
         else:
             stats = fc.stats()
             size_mb = stats.get("bytes", 0) / (1024 * 1024)
+            limit_mb = fc.max_bytes() / (1024 * 1024) if fc.max_bytes() else 0
             print_info(
-                f"Кэш: {stats.get('entries', 0)} треков, {size_mb:.1f} МБ\n"
-                f"Путь: {stats.get('path', '?')}"
+                f"Кэш: {stats.get('entries', 0)} треков, {size_mb:.1f} МБ"
+                + (f" из {limit_mb:.0f} МБ" if limit_mb else "")
+                + f"\nСтарее {fc.max_age_days()} дн. удаляются автоматически"
+                + ("" if fc.max_age_days() else " (отключено)")
+                + f"\nПуть: {stats.get('path', '?')}"
             )
         return
 

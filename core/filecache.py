@@ -31,12 +31,20 @@ import config
 from core.cache import normalize_isrc, normalize_query, url_key
 
 CACHE_DIRNAME = ".cache_audio"
+DAY_SECONDS = 86400.0
+
+# Версия формата кэша. Поднимается вручную, когда меняется то, что
+# записывается: правила канонического имени, набор полей, логика подбора
+# источника. Иначе пользователь будет месяцами получать из кэша файлы,
+# собранные по старым правилам, и не сможет понять почему.
+CACHE_VERSION = 1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audio_files (
     key        TEXT PRIMARY KEY,
     path       TEXT NOT NULL,
     quality    TEXT NOT NULL,
+    version    INTEGER NOT NULL,
     size       INTEGER,
     ext        TEXT,
     created_at REAL NOT NULL,
@@ -166,12 +174,153 @@ class AudioFileCache:
                 conn.executescript(_SCHEMA)
         except Exception:
             self._broken = True
+            return
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """
+        ``CREATE TABLE IF NOT EXISTS`` не добавляет новые колонки, поэтому
+        база прошлой версии молча сломает INSERT. Пересоздаём при расхождении.
+        Старые файлы при этом остаются на диске - чистить их должен
+        ``clear()``, мы не знаем, нужны ли они.
+        """
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(audio_files)")}
+        except Exception:
+            return
+        if not columns or "version" in columns:
+            return
+        try:
+            with self._lock:
+                conn.execute("DROP TABLE IF EXISTS audio_files")
+                conn.executescript(_SCHEMA)
+        except Exception:
+            self._broken = True
 
     def _is_inside_cache(self, path: Path) -> bool:
         try:
             return path.resolve().parent == self.root.resolve()
         except OSError:
             return False
+
+    # -- лимит места ----------------------------------------------------
+
+    def max_bytes(self) -> int:
+        """Потолок кэша в байтах. 0 = без ограничения."""
+        raw = os.getenv("FILE_CACHE_MAX_MB", "2048").strip()
+        try:
+            return int(float(raw) * 1024 * 1024)
+        except (TypeError, ValueError):
+            return 2048 * 1024 * 1024
+
+    def max_age_days(self) -> int:
+        """
+        Сколько дней файл может лежать без запросов, прежде чем быть удалённым.
+
+        Заменяет чистку вручную: то, что месяц никто не просил, мёртвый груз.
+        0 = не удалять по возрасту (тогда работает только лимит по размеру).
+        """
+        raw = os.getenv("FILE_CACHE_MAX_AGE_DAYS", "30").strip()
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return 30
+
+    def prune_expired(self, days: Optional[int] = None) -> int:
+        """
+        Удаляет файлы, к которым не обращались дольше срока. Возвращает число
+        удалённых файлов. Записи из индекса тоже удаляются, иначе они будут
+        висеть вечно, попадая в проверки размера.
+        """
+        age_days = self.max_age_days() if days is None else days
+        if age_days <= 0:
+            return 0
+        conn = self._connect()
+        if conn is None:
+            return 0
+
+        cutoff = time.time() - age_days * DAY_SECONDS
+        try:
+            rows = conn.execute(
+                "SELECT key, path FROM audio_files WHERE used_at < ?", (cutoff,)
+            ).fetchall()
+        except Exception:
+            return 0
+
+        removed = 0
+        for key, raw_path in rows:
+            try:
+                target = Path(raw_path)
+                if target.is_file():
+                    target.unlink()
+            except OSError:
+                # Файла уже нет - запись всё равно чистим.
+                pass
+            try:
+                with self._lock:
+                    conn.execute("DELETE FROM audio_files WHERE key = ?", (key,))
+                removed += 1
+            except Exception:
+                pass
+        return removed
+
+    def enforce_limit(self, keep_key: str = "") -> int:
+        """
+        Вытесняет наименее недавно использованные файлы, пока кэш не влез
+        в лимит. Возвращает число удалённых файлов.
+
+        Без этого кэш на VPS рано или поздно съест диск: FLAC - это
+        30-100 МБ, и бот с ``-q FLAC`` растёт быстро.
+        """
+        limit = self.max_bytes()
+        if limit <= 0:
+            return 0
+        conn = self._connect()
+        if conn is None:
+            return 0
+
+        try:
+            current = self.total_size_bytes()
+        except Exception:
+            return 0
+        if current <= limit:
+            return 0
+
+        try:
+            rows = conn.execute(
+                "SELECT key, path, size FROM audio_files ORDER BY used_at ASC"
+            ).fetchall()
+        except Exception:
+            return 0
+
+        removed = 0
+        freed = 0
+        for key, raw_path, size in rows:
+            if current - freed <= limit:
+                break
+            if keep_key and key == keep_key:
+                # Только что скачанный файл не выгоняем: если он один и
+                # больше лимита, пусть лежит - иначе пользователь только что
+                # скачал трек и тут же потерял бы его.
+                continue
+            target = Path(raw_path)
+            actual = 0
+            try:
+                if target.is_file():
+                    actual = target.stat().st_size
+                    target.unlink()
+            except OSError:
+                # Файла уже нет - запись всё равно чистим, иначе она будет
+                # висеть в индексе, вечно упираясь в проверку размера.
+                actual = size or 0
+            freed += actual
+            try:
+                with self._lock:
+                    conn.execute("DELETE FROM audio_files WHERE key = ?", (key,))
+                removed += 1
+            except Exception:
+                pass
+        return removed
 
     # -- чтение ----------------------------------------------------------
 
@@ -193,14 +342,19 @@ class AudioFileCache:
         for key in build_keys(meta, quality, query, url):
             try:
                 row = conn.execute(
-                    "SELECT path, size FROM audio_files WHERE key = ?", (key,)
+                    "SELECT path, size, version FROM audio_files WHERE key = ?", (key,)
                 ).fetchone()
             except Exception:
                 return None
             if not row:
                 continue
 
-            raw_path, recorded_size = row
+            raw_path, recorded_size, version = row
+            if version != CACHE_VERSION:
+                # Формат записи изменился - старая запись недействительна.
+                self.forget(key)
+                continue
+
             candidate = Path(raw_path)
             if not candidate.is_file():
                 self.forget(key)
@@ -285,16 +439,45 @@ class AudioFileCache:
             with self._lock:
                 conn.executemany(
                     "INSERT OR REPLACE INTO audio_files "
-                    "(key, path, quality, size, ext, created_at, used_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(key, path, quality, version, size, ext, created_at, used_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     [
-                        (k, str(target), (quality or "MP3").upper(), actual_size, target.suffix, now, now)
+                        (
+                            k,
+                            str(target),
+                            (quality or "MP3").upper(),
+                            CACHE_VERSION,
+                            actual_size,
+                            target.suffix,
+                            now,
+                            now,
+                        )
                         for k in keys
                     ],
                 )
         except Exception:
             return target
+        # Первый записанный ключ - самый точный, по нему и защищаем файл
+        # от вытеснения.
+        self._maybe_prune()
+        self.enforce_limit(keep_key=keys[0])
         return target
+
+    _last_prune_at: float = 0.0
+
+    def _maybe_prune(self) -> None:
+        """
+        Чистка по возрасту не на каждом сохранении: полный проход по индексу
+        на каждом треке - лишняя работа. Раз в час достаточно.
+        """
+        now = time.time()
+        if now - self._last_prune_at < 3600:
+            return
+        self._last_prune_at = now
+        try:
+            self.prune_expired()
+        except Exception:
+            pass
 
     def forget(self, key: str) -> None:
         conn = self._connect()

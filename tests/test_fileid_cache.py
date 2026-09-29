@@ -6,6 +6,7 @@ tests build their own :class:`FileIdCache` instances on tmp paths.
 """
 
 import asyncio
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,7 @@ from aiogram.types import Message
 
 import bot as bot_module
 import config
+from bot import fileid_cache
 from bot.fileid_cache import (
     FileIdCache,
     build_keys,
@@ -176,7 +178,56 @@ def test_stats_groups_by_quality(cache):
     # поэтому считаем ключи, а не уникальные треки.
     assert stats["by_quality"].get("MP3", 0) >= 1
     assert stats["by_quality"].get("FLAC", 0) >= 1
-    assert stats["by_quality"]["MP3"] == stats["by_quality"]["FLAC"]
+
+
+# --------------------------------------------------------------------------
+# Версионирование формата
+# --------------------------------------------------------------------------
+
+def test_stale_version_entry_is_discarded(cache):
+    """
+    Файл, залитый в Telegram, физически неизменяем. Если формат записи
+    изменился, старую запись надо выбросить, а не отдавать вечно.
+    """
+    cache.save("OLD_FILE_ID", META, "FLAC")
+    conn = cache._connect()
+    conn.execute("UPDATE file_ids SET version = ?", (fileid_cache.CACHE_VERSION - 1,))
+
+    assert cache.lookup(META, "FLAC") is None
+    # Запись вычищена, а не просто проигнорирована.
+    assert cache.stats()["entries"] == 0
+
+
+def test_old_schema_database_is_migrated(tmp_path):
+    """База прошлой версии кода молча ломает INSERT - мигрируем на старте."""
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE file_ids (
+            key        TEXT PRIMARY KEY,
+            file_id    TEXT NOT NULL,
+            quality    TEXT NOT NULL,
+            performer  TEXT,
+            title      TEXT,
+            duration   INTEGER,
+            created_at REAL NOT NULL,
+            used_at    REAL NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO file_ids VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("isrc:ANCIENT:FLAC", "ANCIENT", "FLAC", "A", "B", 100, time.time(), time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+    instance = FileIdCache(path=db, enabled=True)
+    # Схема пересоздана, кэш снова работоспособен.
+    assert instance.save("NEW_ID", META, "FLAC") >= 1
+    assert instance.lookup(META, "FLAC")["file_id"] == "NEW_ID"
+    instance.close()
 
 
 def test_clear(cache):

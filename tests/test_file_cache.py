@@ -5,12 +5,14 @@ Disabled suite-wide via ``FILE_CACHE_ENABLED=0`` in conftest, so these tests
 build their own :class:`AudioFileCache` instances on tmp paths.
 """
 
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
 
+from core import filecache
 from core.filecache import (
     AudioFileCache,
     build_keys,
@@ -201,6 +203,174 @@ def test_clear_keep_files_only_drops_index(cache, tmp_path):
 def test_total_size(cache, tmp_path):
     cache.store(make_track(tmp_path / "dl", "a.mp3", size=5000), META, "MP3")
     assert cache.total_size_bytes() >= 5000
+
+
+# --------------------------------------------------------------------------
+# Очистка по возрасту
+# --------------------------------------------------------------------------
+
+def test_prune_expired_removes_untouched_files(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "7")
+    src = tmp_path / "dl"
+    stored = cache.store(make_track(src, "a.mp3", size=4096), META, "MP3")
+    assert stored.exists()
+
+    # Отматываем used_at на 10 дней назад.
+    conn = cache._connect()
+    conn.execute(
+        "UPDATE audio_files SET used_at = ?", (time.time() - 10 * 86400,)
+    )
+
+    assert cache.prune_expired() >= 1
+    assert not stored.exists()
+    assert cache.lookup(META, "MP3") is None
+    assert cache.stats()["entries"] == 0
+
+
+def test_prune_keeps_recently_used_files(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "30")
+    stored = cache.store(make_track(tmp_path / "dl", "a.mp3", size=4096), META, "MP3")
+    assert cache.prune_expired() == 0
+    assert stored.exists()
+    assert cache.lookup(META, "MP3") is not None
+
+
+def test_age_zero_disables_pruning(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "0")
+    stored = cache.store(make_track(tmp_path / "dl", "a.mp3", size=4096), META, "MP3")
+    conn = cache._connect()
+    conn.execute("UPDATE audio_files SET used_at = ?", (time.time() - 999 * 86400,))
+    assert cache.prune_expired() == 0
+    assert stored.exists()
+
+
+def test_bad_age_env_falls_back_to_default(cache, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "не-число")
+    assert cache.max_age_days() == 30
+
+
+def test_lookup_refreshes_age(cache, tmp_path, monkeypatch):
+    """Активно используемый трек не должен вылететь по возрасту."""
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "7")
+    cache.store(make_track(tmp_path / "dl", "a.mp3", size=4096), META, "MP3")
+    conn = cache._connect()
+    conn.execute("UPDATE audio_files SET used_at = ?", (time.time() - 6 * 86400,))
+
+    assert cache.lookup(META, "MP3") is not None
+    # used_at обновился -> при следующей чистке файл выживет.
+    assert cache.prune_expired() == 0
+
+
+def test_prune_is_throttled(cache, tmp_path, monkeypatch):
+    """Чистка по возрасту не должна гоняться на каждом сохранении."""
+    monkeypatch.setenv("FILE_CACHE_MAX_AGE_DAYS", "7")
+    calls = []
+    monkeypatch.setattr(cache, "prune_expired", lambda *a, **k: calls.append(1) or 0)
+
+    cache._last_prune_at = time.time()
+    for i in range(5):
+        cache.store(make_track(tmp_path / "dl", f"t{i}.mp3", size=1024), {"artist": f"A{i}", "title": "T"}, "MP3")
+    assert calls == [], "в пределах часа чистка запускаться не должна"
+
+    # Истёк час - чистка пошла.
+    cache._last_prune_at = time.time() - 4000
+    cache.store(make_track(tmp_path / "dl", "t9.mp3", size=1024), {"artist": "A9", "title": "T"}, "MP3")
+    assert calls, "после часа чистка должна запуститься"
+
+
+# --------------------------------------------------------------------------
+# Лимит места
+# --------------------------------------------------------------------------
+
+def test_limit_evicts_least_recently_used(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_MB", "0.01")  # ~10 KB
+    assert cache.max_bytes() < 50_000
+
+    old = tmp_path / "dl_old"
+    cache.store(make_track(old, "old.mp3", size=6000), {"artist": "Old", "title": "T"}, "MP3")
+    time.sleep(0.01)
+    cache.store(make_track(old, "new.mp3", size=6000), {"artist": "New", "title": "T"}, "MP3")
+
+    # Оба файла не влезут -> вытеснен самый старый.
+    assert cache.lookup({"artist": "Old", "title": "T"}, "MP3") is None
+    assert cache.lookup({"artist": "New", "title": "T"}, "MP3") is not None
+
+
+def test_limit_never_evicts_just_stored_file(cache, tmp_path, monkeypatch):
+    """Пользователь только что скачал трек - выгонять его сразу нельзя."""
+    monkeypatch.setenv("FILE_CACHE_MAX_MB", "0.001")  # ~1 KB, меньше файла
+    meta = {"artist": "Huge", "title": "Track"}
+    src = make_track(tmp_path / "dl", "huge.mp3", size=50_000)
+    cache.store(src, meta, "MP3")
+    assert cache.lookup(meta, "MP3") is not None
+
+
+def test_limit_zero_means_unlimited(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_MB", "0")
+    assert cache.max_bytes() == 0
+    cache.store(make_track(tmp_path / "dl", "a.mp3", size=100_000), META, "MP3")
+    assert cache.enforce_limit() == 0
+    assert cache.lookup(META, "MP3") is not None
+
+
+def test_limit_handles_bad_env(cache, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_MB", "не-число")
+    assert cache.max_bytes() == 2048 * 1024 * 1024
+
+
+def test_evicted_file_is_removed_from_disk(cache, tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_CACHE_MAX_MB", "0.01")
+    old = tmp_path / "dl_old"
+    stored = cache.store(
+        make_track(old, "old.mp3", size=6000), {"artist": "Old", "title": "T"}, "MP3"
+    )
+    assert stored.exists()
+    cache.store(make_track(old, "new.mp3", size=6000), {"artist": "New", "title": "T"}, "MP3")
+    assert not stored.exists()
+
+
+# --------------------------------------------------------------------------
+# Версионирование формата
+# --------------------------------------------------------------------------
+
+def test_stale_version_entry_is_discarded(cache, tmp_path):
+    """
+    Меняешь правила тегирования / подбора источника -> файлы, собранные по
+    старым правилам, не должны жить в кэше вечно.
+    """
+    cache.store(make_track(tmp_path / "dl", "a.mp3"), META, "MP3")
+    conn = cache._connect()
+    conn.execute("UPDATE audio_files SET version = ?", (filecache.CACHE_VERSION - 1,))
+
+    assert cache.lookup(META, "MP3") is None
+    assert cache.stats()["entries"] == 0
+
+
+def test_old_schema_database_is_migrated(tmp_path):
+    """CREATE TABLE IF NOT EXISTS не добавляет колонки - нужна явная миграция."""
+    root = tmp_path / "oldcache"
+    root.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(root / "index.db"))
+    conn.executescript(
+        """
+        CREATE TABLE audio_files (
+            key        TEXT PRIMARY KEY,
+            path       TEXT NOT NULL,
+            quality    TEXT NOT NULL,
+            size       INTEGER,
+            ext        TEXT,
+            created_at REAL NOT NULL,
+            used_at    REAL NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    instance = AudioFileCache(root=root, enabled=True)
+    assert instance.store(make_track(tmp_path / "dl", "a.mp3"), META, "MP3") is not None
+    assert instance.lookup(META, "MP3") is not None
+    instance.close()
 
 
 # --------------------------------------------------------------------------

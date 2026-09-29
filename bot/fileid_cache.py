@@ -36,11 +36,20 @@ DAY_SECONDS = 86400.0
 # file_id на серверах Telegram живёт очень долго, но не вечно.
 DEFAULT_TTL_DAYS = 365.0
 
+# Версия формата кэша. Меняется, когда меняется то, что записано в кэш.
+#
+# КРИТИЧНО: файл, уже залитый в Telegram, физически неизменяем. Если поменять
+# тегирование, обложки или набор записываемых полей - старые file_id продолжат
+# отдавать СТАРЫЕ файлы, и никакой код это не исправит. Поэтому при любом
+# изменении формата записи версию нужно поднять вручную: весь кэш сбросится.
+CACHE_VERSION = 1
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS file_ids (
     key        TEXT PRIMARY KEY,
     file_id    TEXT NOT NULL,
     quality    TEXT NOT NULL,
+    version    INTEGER NOT NULL,
     performer  TEXT,
     title      TEXT,
     duration   INTEGER,
@@ -135,6 +144,32 @@ class FileIdCache:
                 conn.executescript(_SCHEMA)
         except Exception:
             self._broken = True
+            return
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """
+        Приводит существующую базу к текущей схеме.
+
+        ``CREATE TABLE IF NOT EXISTS`` не добавляет новые колонки, поэтому
+        база, созданная прошлой версией кода, молча сломает INSERT. На
+        проде это выглядит как «кэш перестал работать и непонятно почему»,
+        поэтому схему проверяем явно и пересоздаём таблицу при расхождении.
+        """
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(file_ids)")}
+        except Exception:
+            return
+        if not columns or "version" in columns:
+            return
+
+        try:
+            with self._lock:
+                conn.execute("DROP TABLE IF EXISTS file_ids")
+                conn.executescript(_SCHEMA)
+        except Exception:
+            # Не смогли пересоздать - лучше работать без кэша, чем падать.
+            self._broken = True
 
     # -- чтение / запись -------------------------------------------------
 
@@ -149,7 +184,7 @@ class FileIdCache:
         for key in build_keys(meta, quality, query, url):
             try:
                 row = conn.execute(
-                    "SELECT file_id, performer, title, duration, used_at "
+                    "SELECT file_id, version, performer, title, duration "
                     "FROM file_ids WHERE key = ?",
                     (key,),
                 ).fetchone()
@@ -158,7 +193,12 @@ class FileIdCache:
             if not row:
                 continue
 
-            file_id, performer, song_title, duration, used_at = row
+            file_id, version, performer, song_title, duration = row
+            if version != CACHE_VERSION:
+                # Формат записи изменился - старая запись больше не годится.
+                self.forget(key)
+                continue
+
             # Продлеваем жизнь записи: регулярно используемый file_id
             # не должен выпасть из кэша.
             try:
@@ -211,13 +251,14 @@ class FileIdCache:
             with self._lock:
                 conn.executemany(
                     "INSERT OR REPLACE INTO file_ids "
-                    "(key, file_id, quality, performer, title, duration, created_at, used_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(key, file_id, quality, version, performer, title, duration, created_at, used_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
                             key,
                             file_id,
                             (quality or "MP3").upper(),
+                            CACHE_VERSION,
                             performer,
                             title,
                             duration,
@@ -249,7 +290,8 @@ class FileIdCache:
         except Exception:
             return 0
 
-    def invalidate_key(self, key: str) -> None:
+    def forget(self, key: str) -> None:
+        """Удаляет одну запись по её ключу."""
         conn = self._connect()
         if conn is None or not key:
             return
@@ -258,6 +300,9 @@ class FileIdCache:
                 conn.execute("DELETE FROM file_ids WHERE key = ?", (key,))
         except Exception:
             pass
+
+    def invalidate_key(self, key: str) -> None:
+        self.forget(key)
 
     def prune(self, ttl_days: float = DEFAULT_TTL_DAYS) -> int:
         conn = self._connect()
