@@ -53,7 +53,12 @@ from .local_bot_api import LocalBotAPIManager
 from .notifier import StatusNotifier, escape_html, format_status_text
 from .process_lock import SingleInstanceLock
 from .storage import QueryStore, UserSettings
-from .keyboards import build_quality_keyboard, build_quality_settings_keyboard
+from .keyboards import (
+    build_quality_keyboard,
+    build_quality_settings_keyboard,
+    build_settings_keyboard,
+    build_search_results_keyboard,
+)
 
 
 __all__ = [
@@ -71,14 +76,21 @@ __all__ = [
     "escape_html",
     "build_metadata_card",
     "build_quality_keyboard",
+    "build_settings_keyboard",
+    "build_search_results_keyboard",
     "handle_start",
+    "handle_settings_command",
     "handle_quality_command",
+    "handle_search_command",
     "handle_preference_callback",
+    "handle_set_search_callback",
+    "handle_search_callback",
     "handle_download_callback",
     "handle_track_query",
     "handle_unsupported_content",
     "run_download_and_send",
     "prepare_thumbnail",
+    "show_search_results",
     "main",
     "core",
     "tagger",
@@ -352,6 +364,26 @@ async def handle_start(message: Message):
     await message.answer(t("cmd.start", lang), parse_mode=ParseMode.HTML)
 
 
+@router.message(Command("settings"))
+async def handle_settings_command(message: Message):
+    """Отображает единое меню настроек качества и режима поиска."""
+    lang = resolve_lang(message)
+    user_id = _get_user_id(message)
+    quality = user_settings.get_quality(user_id)
+    search_mode = user_settings.get_search_mode(user_id)
+
+    pref_key = {"ASK": "pref.ask", "MP3": "pref.mp3", "FLAC": "pref.flac"}.get(quality, "pref.ask")
+    quality_label = t(pref_key, lang)
+    mode_label = t("search.mode_best" if search_mode == "BEST" else "search.mode_list", lang)
+
+    text = t("settings.title", lang, current_pref=quality_label, current_search_mode=mode_label)
+    await message.answer(
+        text,
+        reply_markup=build_settings_keyboard(quality, search_mode, lang),
+        parse_mode=ParseMode.HTML,
+    )
+
+
 @router.message(Command("quality"))
 async def handle_quality_command(message: Message):
     """Отображает меню настройки качества по умолчанию."""
@@ -390,11 +422,61 @@ async def handle_preference_callback(callback: CallbackQuery):
     pref_label = t(pref_key, lang)
     await callback.answer(t_plain("settings.quality_saved_alert", lang, pref=pref_label))
 
-    text = t("settings.quality_saved", lang, current_pref=pref_label)
+    search_mode = user_settings.get_search_mode(user_id)
+    is_settings_menu = False
+    reply_markup = getattr(callback.message, "reply_markup", None) if callback.message else None
+    if reply_markup and hasattr(reply_markup, "inline_keyboard"):
+        for row in reply_markup.inline_keyboard:
+            for btn in row:
+                cb_data = getattr(btn, "callback_data", None)
+                if cb_data and cb_data.startswith("set_search:"):
+                    is_settings_menu = True
+                    break
+
+    if is_settings_menu:
+        mode_label = t("search.mode_best" if search_mode == "BEST" else "search.mode_list", lang)
+        text = t("settings.title", lang, current_pref=pref_label, current_search_mode=mode_label)
+        markup = build_settings_keyboard(new_pref, search_mode, lang)
+    else:
+        text = t("settings.quality_saved", lang, current_pref=pref_label)
+        markup = build_quality_settings_keyboard(new_pref, lang)
+
     try:
         await callback.message.edit_text(
             text,
-            reply_markup=build_quality_settings_keyboard(new_pref, lang),
+            reply_markup=markup,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("set_search:"))
+async def handle_set_search_callback(callback: CallbackQuery):
+    """Обрабатывает выбор режима поиска в настройках."""
+    lang = resolve_lang(callback)
+    user_id = _get_user_id(callback)
+    parts = callback.data.split(":", 1)
+    if len(parts) != 2:
+        await callback.answer(t_plain("error.invalid_request", lang), show_alert=True)
+        return
+    mode = parts[1]
+    if mode not in ["BEST", "LIST"]:
+        return
+
+    user_settings.set_search_mode(user_id, mode)
+    await callback.answer(t_plain("settings.saved_alert", lang))
+
+    quality = user_settings.get_quality(user_id)
+    pref_key = {"ASK": "pref.ask", "MP3": "pref.mp3", "FLAC": "pref.flac"}.get(quality, "pref.ask")
+    quality_label = t(pref_key, lang)
+    mode_label = t("search.mode_best" if mode == "BEST" else "search.mode_list", lang)
+
+    text = t("settings.title", lang, current_pref=quality_label, current_search_mode=mode_label)
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=build_settings_keyboard(quality, mode, lang),
             parse_mode=ParseMode.HTML,
         )
     except Exception:
@@ -446,6 +528,7 @@ async def run_download_and_send(
                 target_quality=target_quality,
                 dest_dir=task_dir,
                 status_callback=notifier.notify,
+                track_meta=meta,
             )
 
         if not file_path or not file_path.exists():
@@ -635,6 +718,202 @@ async def handle_download_callback(callback: CallbackQuery, bot: Bot):
     task.add_done_callback(active_download_tasks.discard)
 
 
+async def show_search_results(message_or_target: Union[Message, CallbackQuery], query: str, bot: Bot, lang: str):
+    """Выполняет мульти-поиск и отправляет список из 5 треков с инлайн-кнопками выбора."""
+    if isinstance(message_or_target, CallbackQuery):
+        chat_id = message_or_target.message.chat.id
+        reply_target = message_or_target.message
+    else:
+        chat_id = message_or_target.chat.id
+        reply_target = message_or_target
+
+    searching_msg = await reply_target.answer(
+        t("status.searching_meta", lang),
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        candidates = await asyncio.to_thread(core.search_tracks, query, 5)
+    except Exception as e:
+        logger.warning(f"Ошибка при мульти-поиске: {e}")
+        candidates = []
+
+    if not candidates:
+        await searching_msg.edit_text(
+            t("search.not_found", lang, query=escape_html(query)),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    qid = uuid.uuid4().hex[:12]
+    await query_store.put(qid, {
+        "query": query,
+        "candidates": candidates,
+        "type": "search_list",
+    })
+
+    lines = []
+    for idx, c in enumerate(candidates, 1):
+        artist = escape_html(c.get("artist") or t("card.unknown_artist", lang))
+        title = escape_html(c.get("title") or t("card.unknown_track", lang))
+        album = c.get("album")
+        year = c.get("year")
+        dur = c.get("duration")
+        sq = c.get("source_quality") or c.get("source") or "Web"
+        explicit = " [E]" if c.get("explicit") else ""
+
+        details = []
+        if album:
+            details.append(escape_html(album))
+        if year:
+            details.append(str(year))
+        if dur:
+            m = int(dur) // 60
+            s = int(dur) % 60
+            details.append(f"{m}:{s:02d}")
+        det_str = f" <i>({', '.join(details)})</i>" if details else ""
+
+        lines.append(f"<b>{idx}.</b> {artist} — <b>{title}</b>{explicit}{det_str}\n   <code>[{sq}]</code>")
+
+    results_text = "\n\n".join(lines)
+    keyboard = build_search_results_keyboard(qid, len(candidates), lang)
+
+    await searching_msg.edit_text(
+        t("search.title", lang, query=escape_html(query), results_text=results_text),
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(Command("search", "s"))
+async def handle_search_command(message: Message, bot: Bot):
+    """Команда /search <запрос> или /s <запрос>."""
+    lang = resolve_lang(message)
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(t("cmd.search_prompt", lang), parse_mode=ParseMode.HTML)
+        return
+
+    query = parts[1].strip()
+    await show_search_results(message, query, bot, lang)
+
+
+@router.callback_query(F.data.startswith("srch:"))
+async def handle_search_callback(callback: CallbackQuery, bot: Bot):
+    """Обрабатывает выбор номера трека или отмену из списка результатов поиска."""
+    lang = resolve_lang(callback)
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer(t_plain("error.invalid_request", lang), show_alert=True)
+        return
+
+    _, qid, action = parts
+    query_data = await query_store.get(qid)
+    if not query_data:
+        await callback.answer(t_plain("error.expired_button", lang), show_alert=True)
+        return
+
+    if action == "cancel":
+        await callback.answer(t_plain("search.cancelled", lang))
+        try:
+            await callback.message.edit_text(
+                t("search.cancelled", lang),
+                reply_markup=None,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        return
+
+    if not action.isdigit():
+        return
+
+    idx = int(action) - 1
+    candidates = query_data.get("candidates", [])
+    if idx < 0 or idx >= len(candidates):
+        await callback.answer(t_plain("error.invalid_request", lang), show_alert=True)
+        return
+
+    candidate = candidates[idx]
+    user_id = _get_user_id(callback)
+    pref = user_settings.get_quality(user_id)
+
+    # Убираем клавиатуру у сообщения со списком
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    # Если качество уже настроено в MP3 или FLAC -> сразу запускаем скачивание!
+    if pref in ["MP3", "FLAC"]:
+        artist = candidate.get("artist") or t("card.unknown_artist", lang)
+        title = candidate.get("title") or t("card.unknown_track", lang)
+        chat_id = callback.message.chat.id
+        track_key = f"{chat_id}:{artist.strip().lower()}:{title.strip().lower()}:{pref}"
+        if track_key in active_download_keys:
+            logger.info(f"Трек {artist} - {title} [{pref}] уже скачивается для чата {chat_id}")
+            await callback.answer(t_plain("status.starting_dl", lang, quality=pref))
+            return
+
+        active_download_keys.add(track_key)
+        await callback.answer(t_plain("status.starting_dl", lang, quality=pref))
+
+        emj = emoji_kwargs()
+        header = f"{emj['emoji_queue']} <b>{escape_html(artist)} — {escape_html(title)}</b> [{pref}]"
+        status_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=format_status_text("status.searching_sources", lang=lang, header=header),
+            parse_mode=ParseMode.HTML,
+        )
+
+        task = asyncio.create_task(
+            run_download_and_send(
+                bot=bot,
+                chat_id=chat_id,
+                query_or_url=candidate.get("url") or f"{artist} - {title}",
+                target_quality=pref,
+                meta=candidate,
+                status_msg=status_msg,
+                lang=lang,
+                dedup_keys={track_key},
+            )
+        )
+        active_download_tasks.add(task)
+        task.add_done_callback(active_download_tasks.discard)
+        return
+
+    # Если качество стоит ASK -> показываем карточку выбранного трека с кнопками качества
+    await callback.answer()
+    track_qid = uuid.uuid4().hex[:12]
+    await query_store.put(track_qid, {
+        "url_or_query": candidate.get("url") or f"{candidate.get('artist')} - {candidate.get('title')}",
+        "meta": candidate
+    })
+
+    card_text = build_metadata_card(candidate, lang)
+    art_url = candidate.get("album_art")
+    keyboard = build_quality_keyboard(track_qid, lang)
+
+    if art_url:
+        try:
+            await callback.message.answer_photo(
+                photo=art_url,
+                caption=card_text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Не удалось отправить фото обложки: {e}")
+
+    await callback.message.answer(
+        card_text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+    )
+
+
 @router.message(F.text)
 async def handle_track_query(message: Message, bot: Bot):
     """
@@ -656,6 +935,14 @@ async def handle_track_query(message: Message, bot: Bot):
 
     user_id = _get_user_id(message)
     pref = user_settings.get_quality(user_id)
+    search_mode = user_settings.get_search_mode(user_id)
+
+    is_url = query_text.startswith("http://") or query_text.startswith("https://")
+
+    # Если это текстовый запрос (не ссылка) и у пользователя включен режим LIST
+    if not is_url and search_mode == "LIST":
+        await show_search_results(message, query_text, bot, lang)
+        return
 
     # Первичное уведомление о поиске метаданных
     searching_msg = await message.answer(t("status.searching_meta", lang), parse_mode=ParseMode.HTML)

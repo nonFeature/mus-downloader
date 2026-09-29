@@ -170,6 +170,15 @@ def resolve_direct_streaming_link(url: str) -> Optional[dict]:
     elif "soundcloud.com" in url_lower:
         res = resolve_soundcloud_track(url)
         if res: return res
+    elif "youtube.com" in url_lower or "youtu.be" in url_lower:
+        res = resolve_youtube_track(url)
+        if res: return res
+    elif "last.fm" in url_lower:
+        res = resolve_lastfm_track(url)
+        if res: return res
+    elif "vk.com" in url_lower or "vk.ru" in url_lower:
+        res = resolve_vk_track(url)
+        if res: return res
     return None
 
 def _parse_odesli_api_data(data: dict) -> Optional[dict]:
@@ -750,6 +759,144 @@ def fetch_discogs_metadata(artist: str, title: str) -> Optional[dict]:
         print(f"[!] Discogs: Ошибка получения метаданных: {e}")
     return None
 
+_LASTFM_PATTERN = re.compile(
+    r"^https?://(?:www\.)?last\.fm/(?:[a-z]{2}/)?music/([^/?#]+)(?:/(?:_/?([^/?#]+)|([^/?#]+)/([^/?#]+)))?",
+    re.I
+)
+
+def resolve_lastfm_track(url: str) -> Optional[dict]:
+    """Извлекает артиста и трек из ссылки Last.fm и находит официальные метаданные."""
+    m = _LASTFM_PATTERN.search(url)
+    if not m:
+        return None
+    raw_artist = m.group(1)
+    raw_track = m.group(2) or m.group(4)
+    raw_album = m.group(3) if m.group(4) else None
+
+    if not raw_artist or not raw_track:
+        return None
+
+    artist = urllib.parse.unquote_plus(raw_artist).strip()
+    title = urllib.parse.unquote_plus(raw_track).strip()
+    album = urllib.parse.unquote_plus(raw_album).strip() if raw_album else None
+
+    if not artist or not title:
+        return None
+
+    # Ищем официальные метаданные по артисту и названию (iTunes, Deezer, MusicBrainz)
+    itunes_meta = fetch_itunes_metadata(artist=artist, title=title)
+    deezer_id = None
+    dz_meta = None
+    try:
+        from sources.deezer import search_deezer_track
+        deezer_id = search_deezer_track(artist, title)
+        if deezer_id:
+            dz_meta = fetch_deezer_metadata(deezer_id)
+    except Exception:
+        pass
+
+    meta = {
+        "title": title,
+        "artist": artist,
+        "album": album or (dz_meta.get("album") if dz_meta else None) or (itunes_meta.get("album") if itunes_meta else None),
+        "year": (dz_meta.get("year") if dz_meta else None) or (itunes_meta.get("year") if itunes_meta else None),
+        "album_art": (dz_meta.get("album_art") if dz_meta else None) or (itunes_meta.get("album_art") if itunes_meta else None),
+        "duration": (dz_meta.get("duration") if dz_meta else None) or (itunes_meta.get("duration") if itunes_meta else None),
+        "deezer_id": deezer_id,
+        "isrc": (dz_meta.get("isrc") if dz_meta else None) or (itunes_meta.get("isrc") if itunes_meta else None),
+        "lastfm_url": url,
+    }
+    return sanitize_metadata_strings(meta)
+
+
+_VK_AUDIO_ID_PATTERN = re.compile(r"audio(-?\d+_\d+)", re.I)
+_VK_TRACK_PATH_PATTERN = re.compile(r"/track/(-?\d+_\d+)", re.I)
+
+def resolve_vk_track(url: str) -> Optional[dict]:
+    """Извлекает метаданные трека из ссылки VK Музыки (vk.com, vk.ru, m.vk.com)."""
+    parsed = urllib.parse.urlparse(url)
+    audio_id_match = _VK_AUDIO_ID_PATTERN.search(url) or _VK_TRACK_PATH_PATTERN.search(url)
+    audio_id = audio_id_match.group(1) if audio_id_match else None
+
+    artist = None
+    title = None
+    duration = None
+    album = None
+    album_art = None
+    direct_mp3 = None
+
+    # 1. Если задан VK_TOKEN, используем официальный audio.getById
+    if config.VK_TOKEN and audio_id:
+        try:
+            r = httpx.get(
+                "https://api.vk.com/method/audio.getById",
+                params={"audios": audio_id, "access_token": config.VK_TOKEN, "v": "5.131"},
+                timeout=5.0
+            )
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("response", [])
+                if items and isinstance(items, list) and isinstance(items[0], dict):
+                    item = items[0]
+                    artist = item.get("artist")
+                    title = item.get("title")
+                    duration = item.get("duration")
+                    direct_mp3 = item.get("url")
+                    alb = item.get("album", {})
+                    if isinstance(alb, dict):
+                        album = alb.get("title")
+                        thumb = alb.get("thumb", {})
+                        if isinstance(thumb, dict):
+                            album_art = thumb.get("photo_600") or thumb.get("photo_300")
+        except Exception as e:
+            print(f"[!] VK API error: {e}")
+
+    # 2. Если аудио ID есть, но токен не задан:
+    if not artist and audio_id and not config.VK_TOKEN:
+        print("[!] VK Музыка: Для скачивания по прямым ID (audio-XXX_YYY) укажите VK_TOKEN в .env")
+
+    # 3. Извлечение из query параметров (например, ?q=Artist+-+Title)
+    if not artist:
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "q" in qs and qs["q"]:
+            raw_q = qs["q"][0].strip()
+            if " - " in raw_q:
+                artist, title = raw_q.split(" - ", 1)
+            else:
+                title = raw_q
+                artist = "Unknown Artist"
+
+    if not title:
+        return None
+
+    # Ищем кроссплатформенные метаданные (Deezer, iTunes, MusicBrainz)
+    itunes_meta = fetch_itunes_metadata(artist=artist, title=title) if artist else None
+    deezer_id = None
+    dz_meta = None
+    if artist and title:
+        try:
+            from sources.deezer import search_deezer_track
+            deezer_id = search_deezer_track(artist, title)
+            if deezer_id:
+                dz_meta = fetch_deezer_metadata(deezer_id)
+        except Exception:
+            pass
+
+    meta = {
+        "title": title,
+        "artist": artist or "Unknown Artist",
+        "album": album or (dz_meta.get("album") if dz_meta else None) or (itunes_meta.get("album") if itunes_meta else None),
+        "year": (dz_meta.get("year") if dz_meta else None) or (itunes_meta.get("year") if itunes_meta else None),
+        "album_art": album_art or (dz_meta.get("album_art") if dz_meta else None) or (itunes_meta.get("album_art") if itunes_meta else None),
+        "duration": duration or (dz_meta.get("duration") if dz_meta else None) or (itunes_meta.get("duration") if itunes_meta else None),
+        "deezer_id": deezer_id,
+        "isrc": (dz_meta.get("isrc") if dz_meta else None) or (itunes_meta.get("isrc") if itunes_meta else None),
+        "direct_url": direct_mp3,
+        "vk_url": url,
+    }
+    return sanitize_metadata_strings(meta)
+
+
 def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
     """
     Получает теги (жанры) трека или исполнителя из Last.fm API.
@@ -797,6 +944,229 @@ def fetch_lastfm_genres(artist: str, title: str) -> Optional[str]:
         pass
     return None
 
+_VIDEO_JUNK_PATTERNS = [
+    r"(?i)\s*[\(\[]\s*official\s+(?:music\s+)?video\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*official\s+audio\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*official\s+visualizer\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*visualizer\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*official\s+hd\s+(?:music\s+)?video\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*official\s+video\s+remastered\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*remastered\s*(?:\d{4})?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*4k(?:\s+remastered|\s+uhd)?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*hd\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*audio\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*lyric\s+video\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*lyrics?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*clip\s+officiel\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*video\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*music\s+video\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*клип\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*премьера\s+(?:клипа|трека)?(?:\s+\d{4})?\s*[\)\]]",
+    r"(?i)\s*[\(\[]\s*mood\s+video\s*[\)\]]",
+    r"(?i)\s*\|?\s*official\s+(?:music\s+)?video\s*$",
+    r"(?i)\s*\|?\s*official\s+audio\s*$",
+]
+
+def clean_youtube_title_and_artist(raw_title: str, channel_name: str = "") -> tuple[str, str]:
+    """
+    Очищает заголовок YouTube-видео от мусора (Official Video, 4K, Remastered и т.д.)
+    и разделяет на исполнителя и название трека.
+    """
+    title = raw_title or ""
+    channel = channel_name or ""
+    if channel.endswith(" - Topic"):
+        channel = channel[:-8].strip()
+    if channel.endswith("VEVO") and len(channel) > 4:
+        channel = channel[:-4].strip()
+    if channel.endswith(" Official"):
+        channel = channel[:-9].strip()
+
+    for pat in _VIDEO_JUNK_PATTERNS:
+        title = re.sub(pat, "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+
+    artist = channel
+    for sep in (" - ", " – ", " — ", " | ", " : "):
+        if sep in title:
+            left, right = title.split(sep, 1)
+            left = left.strip()
+            right = right.strip()
+            if left:
+                artist = left
+                title = right
+                break
+
+    title = title.strip("'\"“”«»`")
+    if (title.startswith("(") and title.endswith(")")) or (title.startswith("[") and title.endswith("]")):
+        inner = title[1:-1].strip()
+        if "(" not in inner and ")" not in inner and "[" not in inner and "]" not in inner:
+            title = inner
+
+    if artist and title.lower().startswith(artist.lower() + " - "):
+        title = title[len(artist) + 3:].strip()
+    elif artist and title.lower().startswith(artist.lower() + ": "):
+        title = title[len(artist) + 2:].strip()
+
+    return artist, title
+
+def resolve_youtube_track(url: str) -> Optional[dict]:
+    """
+    Извлекает название и исполнителя из ссылки на YouTube и ищет
+    официальные метаданные по стриминговым платформам (iTunes, Deezer, Odesli, MusicBrainz, Last.fm).
+    """
+    from sources.youtube import extract_youtube_video_id
+    url = unshorten_url(url)
+    video_id = extract_youtube_video_id(url)
+    if not video_id:
+        return None
+
+    raw_title = ""
+    channel_name = ""
+    duration = None
+    thumb_url = None
+
+    # 1. Сначала пробуем ytmusicapi
+    try:
+        from ytmusicapi import YTMusic
+        yt = YTMusic()
+        song_data = yt.get_song(video_id)
+        if song_data and "videoDetails" in song_data:
+            vd = song_data["videoDetails"]
+            raw_title = vd.get("title", "")
+            channel_name = vd.get("author", "")
+            if vd.get("lengthSeconds"):
+                try:
+                    duration = float(vd["lengthSeconds"])
+                except Exception:
+                    pass
+            thumbs = vd.get("thumbnail", {}).get("thumbnails", [])
+            if thumbs:
+                thumb_url = thumbs[-1].get("url")
+    except Exception:
+        pass
+
+    # 2. Фолбек на быстрый и стабильный YouTube oEmbed
+    if not raw_title:
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+            r = httpx.get(oembed_url, headers={"User-Agent": USER_AGENT}, timeout=4.0)
+            if r.status_code == 200:
+                data = r.json()
+                raw_title = data.get("title", "")
+                channel_name = data.get("author_name", "")
+                thumb_url = data.get("thumbnail_url")
+        except Exception:
+            pass
+
+    # 3. Фолбек на yt-dlp metadata
+    if not raw_title:
+        try:
+            import yt_dlp
+            from sources.ytdlp_opts import js_runtime_opts
+            opts = {"quiet": True, "skip_download": True, "noplaylist": True}
+            opts.update(js_runtime_opts())
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                if info:
+                    raw_title = info.get("track") or info.get("title") or ""
+                    channel_name = info.get("artist") or info.get("uploader") or info.get("channel") or ""
+                    duration = info.get("duration")
+                    thumb_url = info.get("thumbnail")
+        except Exception:
+            pass
+
+    if not raw_title:
+        return None
+
+    artist, clean_title = clean_youtube_title_and_artist(raw_title, channel_name)
+    if not clean_title:
+        clean_title = raw_title
+    if not artist:
+        artist = channel_name or "Unknown Artist"
+
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    meta = {
+        "title": clean_title,
+        "artist": artist,
+        "album": None,
+        "album_artist": artist,
+        "album_art": thumb_url,
+        "year": None,
+        "duration": duration,
+        "track_number": None,
+        "track_total": None,
+        "isrc": None,
+        "explicit": False,
+        "deezer_id": None,
+        "spotify_url": None,
+        "youtube_music_url": canonical_url,
+        "apple_music_url": None,
+        "soundcloud_url": None,
+        "yandex_url": None,
+        "direct_url": canonical_url,
+        "youtube_video_id": video_id,
+    }
+
+    # Поиск по другим платформам (iTunes -> Songlink -> Deezer -> MusicBrainz -> Last.fm)
+    itunes_meta = fetch_itunes_metadata(artist=artist, title=clean_title)
+    if not itunes_meta and (" feat." in clean_title.lower() or " ft." in clean_title.lower()):
+        title_no_feat = re.sub(r"(?i)\s*[\(\[]?\s*f(?:ea)?t\.?[^\)\]]*[\)\]]?", "", clean_title).strip()
+        itunes_meta = fetch_itunes_metadata(artist=artist, title=title_no_feat)
+
+    if itunes_meta:
+        for k in ("title", "artist", "album", "album_artist", "year", "track_number", "track_total", "album_art", "duration"):
+            if itunes_meta.get(k):
+                meta[k] = itunes_meta[k]
+        if itunes_meta.get("apple_music_url"):
+            meta["apple_music_url"] = itunes_meta["apple_music_url"]
+            sl_meta = resolve_song_link(itunes_meta["apple_music_url"])
+            if sl_meta:
+                for k in ("deezer_id", "spotify_url", "isrc"):
+                    if sl_meta.get(k) and not meta.get(k):
+                        meta[k] = sl_meta[k]
+
+    # Если Deezer ID ещё не найден через Odesli/iTunes:
+    if not meta.get("deezer_id"):
+        from sources.deezer import search_deezer_track
+        search_art = meta.get("artist") or artist
+        search_tit = meta.get("title") or clean_title
+        dz_id = search_deezer_track(search_art, search_tit, duration=meta.get("duration") or duration)
+        if not dz_id and search_art != artist:
+            dz_id = search_deezer_track(artist, clean_title, duration=meta.get("duration") or duration)
+        if dz_id:
+            meta["deezer_id"] = dz_id
+
+    if meta.get("deezer_id"):
+        dz = fetch_deezer_metadata(meta["deezer_id"])
+        if dz:
+            for k, v in dz.items():
+                if v and not meta.get(k):
+                    meta[k] = v
+
+    album = meta.get("album")
+    album_artist = meta.get("album_artist") or meta.get("artist") or ""
+    if is_compilation_album(album, album_artist) or not album:
+        isrc = meta.get("isrc")
+        mb_data = None
+        if isrc:
+            mb_data = fetch_musicbrainz_by_isrc(isrc, meta.get("artist", ""))
+        if not mb_data and meta.get("artist") and meta.get("title"):
+            mb_data = search_musicbrainz_by_text(meta["artist"], meta["title"])
+        if mb_data:
+            for key in ("album", "year", "track_number", "track_total", "album_artist"):
+                if mb_data.get(key):
+                    meta[key] = mb_data[key]
+
+    try:
+        genres = fetch_lastfm_genres(meta.get("artist", ""), meta.get("title", ""))
+        if genres:
+            meta["genre"] = genres
+    except Exception:
+        pass
+
+    return sanitize_metadata_strings(meta)
+
 def sanitize_metadata_strings(meta: Optional[dict]) -> Optional[dict]:
     """Декодирует HTML-сущности (например, &#x27; -> ') и очищает строки метаданных."""
     if not meta or not isinstance(meta, dict):
@@ -810,12 +1180,31 @@ def sanitize_metadata_strings(meta: Optional[dict]) -> Optional[dict]:
 def get_track_metadata(url: str) -> dict:
     """
     Полный цикл извлечения метаданных:
-    1. Запрос в song.link.
-    2. Запрос в API Deezer и iTunes.
-    3. При необходимости - поиск оригинального альбома через MusicBrainz.
-    4. Получение жанров из Last.fm.
+    1. Для YouTube: специализированный разбор, поиск официального трека на других платформах.
+    2. Запрос в song.link.
+    3. Запрос в API Deezer и iTunes.
+    4. При необходимости - поиск оригинального альбома через MusicBrainz.
+    5. Получение жанров из Last.fm.
     """
     print(f"[*] Метаданные: {url}...")
+    url = unshorten_url(url)
+    url_lower = url.lower()
+
+    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+        yt_meta = resolve_youtube_track(url)
+        if yt_meta and yt_meta.get("title") and yt_meta.get("artist"):
+            return sanitize_metadata_strings(yt_meta)
+
+    if "last.fm" in url_lower:
+        lfm_meta = resolve_lastfm_track(url)
+        if lfm_meta and lfm_meta.get("title") and lfm_meta.get("artist"):
+            return sanitize_metadata_strings(lfm_meta)
+
+    if "vk.com" in url_lower or "vk.ru" in url_lower:
+        vk_meta = resolve_vk_track(url)
+        if vk_meta and vk_meta.get("title") and vk_meta.get("artist"):
+            return sanitize_metadata_strings(vk_meta)
+
     info = resolve_song_link(url)
     if not info or not info.get("title") or not info.get("artist"):
         direct_info = resolve_direct_streaming_link(url)
@@ -1091,3 +1480,134 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
         pass
 
     return sanitize_metadata_strings(meta)
+
+
+def search_multisource_tracks(query: str, limit: int = 8) -> list[dict]:
+    """
+    Агрегированный поиск треков по нескольким источникам (Deezer, iTunes, YouTube Music).
+    Возвращает список структурированных кандидатов с рейтингом релевантности.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    candidates: list[dict] = []
+    seen_keys: set[str] = set()
+
+    # 1. Поиск в Deezer (даёт доступ к FLAC и MP3 320k)
+    try:
+        r = httpx.get("https://api.deezer.com/search", params={"q": query, "limit": limit * 2}, timeout=6.0)
+        if r.status_code == 200:
+            for item in r.json().get("data", []):
+                t_id = str(item.get("id"))
+                t_name = item.get("title", "").strip()
+                a_name = item.get("artist", {}).get("name", "").strip()
+                if not t_name or not a_name:
+                    continue
+                key = f"{a_name.lower()}::{t_name.lower()}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                alb = item.get("album", {})
+                cand = {
+                    "title": t_name,
+                    "artist": a_name,
+                    "album": alb.get("title"),
+                    "year": (alb.get("release_date") or "")[:4],
+                    "duration": item.get("duration"),
+                    "deezer_id": t_id,
+                    "album_art": alb.get("cover_xl") or alb.get("cover_big"),
+                    "source": "Deezer",
+                    "source_quality": "Deezer (FLAC / 320k)",
+                    "explicit": bool(item.get("explicit_lyrics")),
+                    "url": f"https://www.deezer.com/track/{t_id}",
+                    "score": score_text_candidate(t_name, a_name, query),
+                }
+                candidates.append(cand)
+    except Exception as e:
+        print(f"[!] Deezer search error: {e}")
+
+    # 2. Поиск в iTunes / Apple Music (даёт точные года, studio-альбомы и 1000x1000 арт)
+    try:
+        r = httpx.get("https://itunes.apple.com/search", params={
+            "term": query,
+            "media": "music",
+            "entity": "musicTrack",
+            "limit": limit * 2
+        }, timeout=6.0)
+        if r.status_code == 200:
+            for t in r.json().get("results", []):
+                t_name = (t.get("trackName") or "").strip()
+                a_name = (t.get("artistName") or "").strip()
+                if not t_name or not a_name:
+                    continue
+                key = f"{a_name.lower()}::{t_name.lower()}"
+                existing = next((c for c in candidates if f"{c['artist'].lower()}::{c['title'].lower()}" == key), None)
+                if existing:
+                    if not existing.get("year") and t.get("releaseDate"):
+                        existing["year"] = t["releaseDate"][:4]
+                    if not existing.get("album_art") and t.get("artworkUrl100"):
+                        existing["album_art"] = t["artworkUrl100"].replace("100x100bb.jpg", "1000x1000bb.jpg")
+                    continue
+
+                seen_keys.add(key)
+                cand = {
+                    "title": t_name,
+                    "artist": a_name,
+                    "album": t.get("collectionName"),
+                    "year": (t.get("releaseDate") or "")[:4],
+                    "duration": int(t.get("trackTimeMillis", 0) / 1000) if t.get("trackTimeMillis") else None,
+                    "deezer_id": None,
+                    "album_art": (t.get("artworkUrl100") or "").replace("100x100bb.jpg", "1000x1000bb.jpg"),
+                    "source": "Apple Music",
+                    "source_quality": "Apple Music (256k AAC)",
+                    "explicit": t.get("trackExplicitness") == "explicit",
+                    "url": t.get("trackViewUrl"),
+                    "score": score_text_candidate(t_name, a_name, query),
+                }
+                candidates.append(cand)
+    except Exception as e:
+        print(f"[!] iTunes search error: {e}")
+
+    # 3. YouTube Music поиск (для треков, отсутствующих в Deezer/iTunes)
+    if len(candidates) < limit:
+        try:
+            from ytmusicapi import YTMusic
+            yt = YTMusic()
+            yt_res = yt.search(query, filter="songs", limit=limit)
+            for item in yt_res:
+                t_name = (item.get("title") or "").strip()
+                arts = item.get("artists", [])
+                a_name = ", ".join(a.get("name", "") for a in arts if isinstance(a, dict)) or item.get("author") or ""
+                a_name = a_name.strip()
+                if not t_name:
+                    continue
+                key = f"{a_name.lower()}::{t_name.lower()}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                vid = item.get("videoId")
+                alb_info = item.get("album")
+                alb_title = alb_info.get("name") if isinstance(alb_info, dict) else (alb_info or "")
+                cand = {
+                    "title": t_name,
+                    "artist": a_name or "Unknown Artist",
+                    "album": alb_title or None,
+                    "year": item.get("year"),
+                    "duration": item.get("duration_seconds"),
+                    "deezer_id": None,
+                    "album_art": (item.get("thumbnails", [{}])[-1].get("url") if item.get("thumbnails") else None),
+                    "source": "YouTube Music",
+                    "source_quality": "YouTube Music (256k VBR)",
+                    "explicit": bool(item.get("isExplicit")),
+                    "url": f"https://music.youtube.com/watch?v={vid}" if vid else None,
+                    "score": score_text_candidate(t_name, a_name, query) * 0.95,
+                }
+                candidates.append(cand)
+        except Exception:
+            pass
+
+    # Сортируем по оценке совпадения
+    candidates.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+    return candidates[:limit]
+

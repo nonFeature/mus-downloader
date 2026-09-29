@@ -18,8 +18,9 @@ logger = logging.getLogger("mus_bot.storage")
 
 SUPPORTED_QUALITIES: Set[str] = {"ASK", "FLAC", "MP3"}
 SUPPORTED_LANGUAGES: Set[str] = {"ru", "en"}
+SUPPORTED_SEARCH_MODES: Set[str] = {"BEST", "LIST"}
 
-__all__ = ["UserSettings", "QueryStore", "SUPPORTED_QUALITIES", "SUPPORTED_LANGUAGES"]
+__all__ = ["UserSettings", "QueryStore", "SUPPORTED_QUALITIES", "SUPPORTED_LANGUAGES", "SUPPORTED_SEARCH_MODES"]
 
 
 class _AwaitableNone:
@@ -70,7 +71,10 @@ class UserSettings:
                             quality = raw_quality if raw_quality in SUPPORTED_QUALITIES else "ASK"
                             raw_lang = v.get("language")
                             lang = raw_lang if raw_lang in SUPPORTED_LANGUAGES else None
-                            new_settings[uid] = {"quality": quality, "language": lang}
+                            entry: Dict[str, Any] = {"quality": quality, "language": lang}
+                            if "search_mode" in v and v["search_mode"] in SUPPORTED_SEARCH_MODES:
+                                entry["search_mode"] = v["search_mode"]
+                            new_settings[uid] = entry
                         elif isinstance(v, str):
                             quality = v if v in SUPPORTED_QUALITIES else "ASK"
                             new_settings[uid] = {"quality": quality, "language": None}
@@ -143,6 +147,32 @@ class UserSettings:
             self._settings[uid] = {"quality": "ASK", "language": lang}
         else:
             self._settings[uid]["language"] = lang
+        self._save()
+
+    def get_search_mode(self, user_id: Union[int, str]) -> str:
+        """Возвращает режим поиска: 'BEST' (сразу лучший трек) или 'LIST' (список вариантов)."""
+        try:
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return "BEST"
+        entry = self._settings.get(uid)
+        if not entry:
+            return "BEST"
+        val = entry.get("search_mode", "BEST")
+        return val if val in SUPPORTED_SEARCH_MODES else "BEST"
+
+    def set_search_mode(self, user_id: Union[int, str], mode: str) -> None:
+        """Устанавливает режим поиска ('BEST' или 'LIST')."""
+        if mode not in SUPPORTED_SEARCH_MODES:
+            return
+        try:
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return
+        if uid not in self._settings:
+            self._settings[uid] = {"quality": "ASK", "language": None, "search_mode": mode}
+        else:
+            self._settings[uid]["search_mode"] = mode
         self._save()
 
 

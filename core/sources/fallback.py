@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 from .youtube import download_youtube_track
 from .soundcloud import download_soundcloud_track
 
@@ -10,7 +10,9 @@ def download_fallback_track(
     title: str = "",
     duration: Optional[float] = None,
     album: Optional[str] = None,
-    isrc: Optional[str] = None
+    isrc: Optional[str] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Фолбек-загрузчик для YouTube / SoundCloud.
@@ -24,7 +26,8 @@ def download_fallback_track(
             artist=artist,
             title=title,
             duration=duration,
-            album=album
+            album=album,
+            progress_callback=progress_callback,
         )
 
     direct_url = url if ("youtube.com" in url or "youtu.be" in url) else None
@@ -35,5 +38,7 @@ def download_fallback_track(
         duration=duration,
         album=album,
         isrc=isrc,
-        direct_url=direct_url
+        direct_url=direct_url,
+        status_callback=status_callback,
+        progress_callback=progress_callback,
     )

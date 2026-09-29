@@ -1,9 +1,10 @@
 import hashlib
 import re
+import time
 import httpx
 from pathlib import Path
 from Crypto.Cipher import Blowfish
-from typing import Optional
+from typing import Optional, Callable
 
 PROXY_API = "https://lufts-dzmedia.fly.dev/get_url"
 SECRET = b"g4el58wc0zvf9na1"
@@ -53,7 +54,8 @@ def download_deezer_track(
     dest_dir: Path,
     target_quality: str = "FLAC",
     artist: str = "",
-    title: str = ""
+    title: str = "",
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Скачивает трек из Deezer по ID.
@@ -137,7 +139,30 @@ def download_deezer_track(
         
         with httpx.stream("GET", stream_url, headers=headers, timeout=30) as r:
             r.raise_for_status()
-            decrypt_and_save(r.iter_bytes(chunk_size=4096), bf_key, output_path)
+            total_bytes = int(r.headers.get("Content-Length", 0))
+
+            def _tracked_iter(iterable, total_sz):
+                downloaded = 0
+                start_time = time.time()
+                for chunk in iterable:
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        elapsed = time.time() - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        eta = (total_sz - downloaded) / speed if (speed > 0 and total_sz > downloaded) else None
+                        progress_callback({
+                            "stage": "download",
+                            "source": "Deezer",
+                            "description": f"Deezer: скачивание {actual_format}...",
+                            "downloaded_bytes": downloaded,
+                            "total_bytes": total_sz,
+                            "speed": speed,
+                            "eta": eta,
+                        })
+                    yield chunk
+
+            stream_iter = _tracked_iter(r.iter_bytes(chunk_size=4096), total_bytes) if progress_callback else r.iter_bytes(chunk_size=4096)
+            decrypt_and_save(stream_iter, bf_key, output_path)
             
         print(f"[+] Deezer: скачан {output_path.name}")
         return output_path
@@ -146,27 +171,49 @@ def download_deezer_track(
         print(f"[!] Deezer: Ошибка скачивания трека {track_id}: {e}")
     return None
 
-def search_deezer_track(artist: str, title: str) -> Optional[str]:
+def search_deezer_track(artist: str, title: str, duration: Optional[float] = None) -> Optional[str]:
     """
-    Ищет трек по артисту и названию на Deezer с валидацией версий (без нежелательных ремиксов).
+    Ищет трек по артисту и названию на Deezer с валидацией версий (без нежелательных ремиксов)
+    и проверкой длительности.
     Возвращает track_id наиболее подходящего совпадения.
     """
     from sources.youtube_matcher import toks, _version_markers
-    query = f"{artist} {title}"
-    try:
-        r = httpx.get("https://api.deezer.com/search", params={"q": query, "limit": 10}, timeout=3.0)
-        if r.status_code == 200:
+    
+    queries = [f"{artist} {title}"]
+    # Если артист составной (например, "A & B" или "A feat. B"), пробуем также основного артиста
+    primary_artist = re.split(r"\s+(?:&|feat\.?|ft\.?|,)\s+", artist, flags=re.I)[0].strip()
+    if primary_artist and primary_artist.lower() != artist.lower():
+        queries.append(f"{primary_artist} {title}")
+
+    # Очищаем название от f/feat для дополнительного запроса
+    clean_title_no_feat = re.sub(r"(?i)\s*[\(\[]?\s*f(?:ea)?t\.?[^\)\]]*[\)\]]?", "", title).strip()
+    if clean_title_no_feat and clean_title_no_feat.lower() != title.lower():
+        queries.append(f"{artist} {clean_title_no_feat}")
+        if primary_artist and primary_artist.lower() != artist.lower():
+            queries.append(f"{primary_artist} {clean_title_no_feat}")
+
+    seen_queries = set()
+    best_id = None
+    best_score = -1.0
+
+    target_query = f"{artist} {title}"
+    target_toks = toks(target_query)
+    target_vm = _version_markers(target_query)
+
+    for query in queries:
+        q_norm = query.strip().lower()
+        if not q_norm or q_norm in seen_queries:
+            continue
+        seen_queries.add(q_norm)
+
+        try:
+            r = httpx.get("https://api.deezer.com/search", params={"q": query, "limit": 10}, timeout=7.0)
+            if r.status_code != 200:
+                continue
             data = r.json().get("data", [])
             if not data:
-                return None
-            
-            target_query = f"{artist} {title}"
-            target_toks = toks(target_query)
-            target_vm = _version_markers(target_query)
-            
-            best_id = None
-            best_score = -1.0
-            
+                continue
+
             for track in data:
                 track_title = track.get("title", "")
                 track_artist = track.get("artist", {}).get("name", "")
@@ -189,13 +236,28 @@ def search_deezer_track(artist: str, title: str) -> Optional[str]:
                     
                 extra_words = len(c_toks - target_toks)
                 score -= 0.02 * min(extra_words, 10)
+
+                # Проверка длительности, если известна
+                cand_dur = track.get("duration")
+                if duration and cand_dur:
+                    try:
+                        dur_delta = abs(float(duration) - float(cand_dur))
+                        if dur_delta > 30 and dur_delta / max(1.0, float(duration)) > 0.15:
+                            score -= 0.35
+                        elif dur_delta <= 8:
+                            score += 0.05
+                    except Exception:
+                        pass
                 
                 if score > best_score:
                     best_score = score
                     best_id = str(track.get("id"))
                     
-            if best_id and best_score >= 0.5:
+            if best_id and best_score >= 0.65:
                 return best_id
-    except Exception as e:
-        print(f"[!] Deezer (Search): {e}")
+        except Exception as e:
+            print(f"[!] Deezer (Search): {e}")
+
+    if best_id and best_score >= 0.45:
+        return best_id
     return None

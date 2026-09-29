@@ -33,6 +33,7 @@ def is_soulseek_configured() -> bool:
 LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "")
 DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
 SONGLINK_API_KEY = (os.getenv("SONGLINK_API_KEY") or os.getenv("ODESLI_API_KEY", "")).strip().strip("'\"")
+VK_TOKEN = (os.getenv("VK_TOKEN") or os.getenv("VK_ACCESS_TOKEN", "")).strip().strip("'\"")
 
 # Путь для сохранения скачанных треков
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./downloads"))

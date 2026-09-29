@@ -1,5 +1,6 @@
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -54,34 +55,63 @@ def _install_legacy_aliases() -> None:
 _install_legacy_aliases()
 
 
+def search_tracks(query: str, limit: int = 8) -> list[dict]:
+    """
+    Агрегированный поиск треков по Deezer, Apple Music и YouTube Music.
+    """
+    return metadata.search_multisource_tracks(query, limit=limit)
+
+
 def download_track_by_link(
     url_or_query: str,
     target_quality: str = "MP3",
     dest_dir: Optional[Path] = None,
-    status_callback: Optional[Callable[[str], None]] = None
+    status_callback: Optional[Callable[[str], None]] = None,
+    track_meta: Optional[dict] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Основная логика скачивания трека:
     - Для FLAC: честный поиск Lossless (Soulseek -> Deezer).
     - Для MP3: Deezer (320kbps CBR) -> Soulseek (slsk, если настроен) -> YouTube Music (CSVMusic matcher ~250-280k VBR) -> yt-dlp fallback.
-    - При наличии прямых ссылок (SoundCloud, YouTube) скачивает напрямую из указанного источника.
+    - При наличии прямых ссылок (SoundCloud, YouTube, VK) скачивает напрямую из указанного источника.
     """
     target_dir = Path(dest_dir) if dest_dir else config.DOWNLOAD_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
 
     def report(msg: str):
-        print(msg)
+        if not progress_callback:
+            print(msg)
         if status_callback:
             try:
                 status_callback(msg)
             except Exception:
                 pass
+        if progress_callback:
+            try:
+                progress_callback({"stage": "status", "description": msg})
+            except Exception:
+                pass
+
+    url_or_query = (url_or_query or "").strip().strip("'\"")
+    if not url_or_query and not track_meta:
+        print("[!] Ссылка или запрос не могут быть пустыми.")
+        return None
+
+    if progress_callback:
+        progress_callback({
+            "stage": "search",
+            "description": "Поиск метаданных трека...",
+            "percent": 10,
+        })
 
     # 1. Извлекаем метаданные
     is_url = url_or_query.startswith("http://") or url_or_query.startswith("https://")
     is_soundcloud = is_url and ("soundcloud.com" in url_or_query.lower() or "on.soundcloud.com" in url_or_query.lower())
     is_youtube = is_url and ("youtube.com" in url_or_query.lower() or "youtu.be" in url_or_query.lower())
-    if is_url:
+    if track_meta:
+        meta = track_meta
+    elif is_url:
         meta = metadata.get_track_metadata(url_or_query)
     else:
         meta = metadata.resolve_query_metadata(url_or_query)
@@ -102,6 +132,12 @@ def download_track_by_link(
     year_str = f" ({meta.get('year')})" if meta.get('year') else ""
     dur_str = f" [{round(duration)}s]" if duration else ""
     report(f"\n[*] Трек: {artist} - {title}{exp_str}{year_str}{dur_str} [{target_quality}]")
+    if progress_callback:
+        progress_callback({
+            "stage": "search",
+            "description": f"Трек: {artist} - {title} [{target_quality}]",
+            "percent": 25,
+        })
     
     file_path: Optional[Path] = None
     source_used: Optional[str] = None
@@ -109,7 +145,7 @@ def download_track_by_link(
     
     deezer_id = meta.get("deezer_id")
     if not deezer_id and artist and title:
-        deezer_id = search_deezer_track(artist, title)
+        deezer_id = search_deezer_track(artist, title, duration=duration)
 
     # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
     if target_quality == "FLAC":
@@ -123,7 +159,8 @@ def download_track_by_link(
                 artist=artist,
                 title=title,
                 duration=duration,
-                album=album
+                album=album,
+                progress_callback=progress_callback,
             )
             if sc_candidate:
                 if sc_candidate.suffix.lower() in [".flac", ".wav"]:
@@ -147,6 +184,7 @@ def download_track_by_link(
                     target_dir,
                     target_quality="FLAC",
                     status_callback=report,
+                    progress_callback=progress_callback,
                 )
                 if file_path and file_path.suffix.lower() == ".flac":
                     source_used = f"Soulseek ({cand['quality']})"
@@ -163,7 +201,14 @@ def download_track_by_link(
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
         if not file_path and deezer_id:
             report("[*] Deezer: скачивание FLAC...")
-            file_path = download_deezer_track(deezer_id, target_dir, target_quality="FLAC", artist=artist, title=title)
+            file_path = download_deezer_track(
+                deezer_id,
+                target_dir,
+                target_quality="FLAC",
+                artist=artist,
+                title=title,
+                progress_callback=progress_callback,
+            )
             if file_path and file_path.suffix.lower() == ".flac":
                 source_used = "Deezer FLAC"
 
@@ -186,32 +231,23 @@ def download_track_by_link(
                     artist=artist,
                     title=title,
                     duration=duration,
-                    album=album
+                    album=album,
+                    progress_callback=progress_callback,
                 )
                 if file_path:
                     source_used = "SoundCloud (Original)"
 
-        # 1. Если передана прямая ссылка на YouTube: скачиваем напрямую
-        if not file_path and is_youtube:
-            report("\n[*] Прямая ссылка на YouTube: скачивание трека...")
-            file_path = download_youtube_track(
-                artist=artist,
-                title=title,
-                dest_dir=target_dir,
-                duration=duration,
-                album=album,
-                isrc=isrc,
-                direct_url=url_or_query,
-                explicit=explicit,
-                status_callback=report,
-            )
-            if file_path:
-                source_used = "YouTube Music"
-
         # Шаг MP3-1: Deezer MP3 320 (честный студийный 320k CBR)
         if not file_path and deezer_id:
             report("[*] Deezer: скачивание MP3 320...")
-            file_path = download_deezer_track(deezer_id, target_dir, target_quality="MP3_320", artist=artist, title=title)
+            file_path = download_deezer_track(
+                deezer_id,
+                target_dir,
+                target_quality="MP3_320",
+                artist=artist,
+                title=title,
+                progress_callback=progress_callback,
+            )
             if file_path:
                 source_used = "Deezer (MP3 320)"
 
@@ -230,6 +266,7 @@ def download_track_by_link(
                     target_dir,
                     target_quality="MP3",
                     status_callback=report,
+                    progress_callback=progress_callback,
                 )
                 if file_path:
                     source_used = f"Soulseek ({cand['quality']})"
@@ -237,7 +274,62 @@ def download_track_by_link(
             if not file_path and candidates:
                 report(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
-        # Шаг MP3-3: YouTube Music с умным поиском CSVMusic (длительность + токенизация + фильтры каверов + Explicit)
+        # Шаг MP3-3a: Если есть прямая ссылка на аудиопоток (например, VK Музыка CDN)
+        direct_audio_url = meta.get("direct_url")
+        if not file_path and direct_audio_url and not is_youtube and "youtube" not in direct_audio_url and not is_soundcloud and "soundcloud" not in direct_audio_url:
+            report(f"[*] Прямое скачивание аудиопотока ({artist} - {title})...")
+            try:
+                import httpx
+                from .sources.youtube import _clean_filename
+                direct_file = target_dir / f"{_clean_filename(artist)} - {_clean_filename(title)}.mp3"
+                with httpx.stream("GET", direct_audio_url, timeout=30.0, follow_redirects=True) as resp:
+                    if resp.status_code == 200:
+                        total_len = int(resp.headers.get("Content-Length", 0))
+                        downloaded = 0
+                        start_t = time.time()
+                        with open(direct_file, "wb") as f:
+                            for chunk in resp.iter_bytes(chunk_size=65536):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if progress_callback:
+                                    elapsed = time.time() - start_t
+                                    speed = downloaded / elapsed if elapsed > 0 else 0
+                                    eta = (total_len - downloaded) / speed if (speed > 0 and total_len > downloaded) else None
+                                    progress_callback({
+                                        "stage": "download",
+                                        "source": "VK Музыка" if meta.get("vk_url") else "Direct Stream",
+                                        "description": f"Скачивание аудиопотока ({artist} - {title})...",
+                                        "downloaded_bytes": downloaded,
+                                        "total_bytes": total_len,
+                                        "speed": speed,
+                                        "eta": eta,
+                                    })
+                        file_path = direct_file
+                        source_used = "VK Музыка" if meta.get("vk_url") else "Direct Stream"
+            except Exception as e:
+                report(f"[!] Ошибка прямого скачивания потока: {e}")
+
+        # Шаг MP3-3b: Если передана прямая ссылка YouTube — скачиваем по исходной ссылке
+        # (если на Deezer и Soulseek не нашлось официального студийного релиза)
+        if not file_path and (is_youtube or (direct_audio_url and ("youtube" in direct_audio_url or "youtu.be" in direct_audio_url))):
+            yt_target = direct_audio_url if (direct_audio_url and ("youtube" in direct_audio_url or "youtu.be" in direct_audio_url)) else url_or_query
+            report(f"[*] YouTube: скачивание по прямой ссылке ({artist} - {title})...")
+            file_path = download_youtube_track(
+                artist=artist,
+                title=title,
+                dest_dir=target_dir,
+                duration=duration,
+                album=album,
+                isrc=isrc,
+                direct_url=yt_target,
+                explicit=explicit,
+                status_callback=report,
+                progress_callback=progress_callback,
+            )
+            if file_path:
+                source_used = "YouTube (Direct)"
+
+        # Шаг MP3-4: YouTube Music с умным поиском CSVMusic (для текстовых запросов или стриминговых ссылок)
         if not file_path:
             report("[*] YouTube Music: поиск трека...")
             direct_yt = meta.get("youtube_music_url")
@@ -252,14 +344,15 @@ def download_track_by_link(
                 direct_url=direct_yt,
                 explicit=explicit,
                 status_callback=report,
+                progress_callback=progress_callback,
             )
             if file_path:
                 source_used = "YouTube Music"
 
-        # Шаг MP3-4: Финальный фолбек
+        # Шаг MP3-5: Финальный фолбек
         if not file_path:
             report("[*] yt-dlp: фолбек-скачивание...")
-            fallback_target = meta.get("youtube_music_url") or meta.get("soundcloud_url") or url_or_query
+            fallback_target = meta.get("direct_url") or meta.get("youtube_music_url") or meta.get("soundcloud_url") or url_or_query
             file_path = download_fallback_track(
                 url=fallback_target,
                 dest_dir=target_dir,
@@ -267,7 +360,9 @@ def download_track_by_link(
                 title=title,
                 duration=duration,
                 album=album,
-                isrc=isrc
+                isrc=isrc,
+                status_callback=report,
+                progress_callback=progress_callback,
             )
             if file_path:
                 if fallback_target and ("soundcloud.com" in fallback_target.lower() or "on.soundcloud.com" in fallback_target.lower()):
@@ -284,6 +379,12 @@ def download_track_by_link(
 
     # 4. Если скачивание успешно, вшиваем метаданные и обложку
     if file_path and file_path.exists():
+        if progress_callback:
+            progress_callback({
+                "stage": "tagging",
+                "description": f"Тегирование: {file_path.name} ({source_used})...",
+                "percent": 96,
+            })
         report(f"[*] Тегирование: {file_path.name} ({source_used})...")
         
         # Определяем метку качества по фактическому файлу
@@ -337,6 +438,12 @@ def download_track_by_link(
             source_quality=quality_label,
             genre=meta.get("genre")
         )
+        if progress_callback:
+            progress_callback({
+                "stage": "done",
+                "description": f"Готово: {file_path.name}",
+                "percent": 100,
+            })
         return file_path
     else:
         print("[-] Не удалось скачать трек ни с одного источника.")

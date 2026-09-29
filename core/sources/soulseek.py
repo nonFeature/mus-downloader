@@ -829,6 +829,7 @@ def download_soulseek_track(
     target_quality: str = "MP3",
     timeout: float = 600.0,
     status_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Скачивает файл из Soulseek (через встроенный клиент или slskd) и копирует в целевую папку.
@@ -840,10 +841,16 @@ def download_soulseek_track(
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     def _notify(msg: str) -> None:
-        print(msg)
         if status_callback:
             try:
                 status_callback(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+        if progress_callback:
+            try:
+                progress_callback({"stage": "status", "source": "Soulseek", "description": msg})
             except Exception:
                 pass
 

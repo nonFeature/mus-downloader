@@ -16,7 +16,7 @@ SEARCH_RETRY_SLEEP_S = 0.9
 _PENALTY_TERMS = {
     "cover", "sped", "slowed", "nightcore", "8d", "reverb",
     "mashup", "karaoke", "instrumental", "demo", "tribute", "soundalike",
-    "remx", "rmx"
+    "remx", "rmx", "acapella"
 }
 
 _CLEAN_TERMS = {
@@ -37,10 +37,13 @@ _VERSION_PATTERNS = {
     "parody": r"\bparody\b",
     "tribute": r"\btribute\b",
     "karaoke": r"\bkaraoke\b",
-    "instrumental": r"\binstrumental\b",
+    "instrumental": r"\binstrumental\b|\binst\b|\bno vocal(?:s)?\b",
+    "vocal": r"\bvocal(?:s)?\b|\bacapella\b|\ba\s*cappella\b|\bisolated vocal(?:s)?\b",
 }
 
 _CAST_PENALTY_TERMS = {"cast", "original cast", "tribute band", "musical", "orchestra"}
+
+_TITLE_STOP_WORDS = {"the", "a", "an", "of", "and", "in", "on", "at", "to", "for", "with", "by", "is", "it"}
 
 def norm_text(s: str) -> str:
     """Нормализует строку: Unicode NFKC, casefold, сжатие пробелов."""
@@ -117,6 +120,17 @@ def score_candidate(track: Dict, cand: Dict) -> float:
     title_overlap = _overlap_ratio(track_title_tokens, cand_title_tokens)
     artist_overlap = _overlap_ratio(track_artist_tokens, cand_artist_tokens)
 
+    # 1. Валидация совпадения названия:
+    # Если в запросе есть значимые слова названия, но в кандидате нет ни одного совпадения —
+    # кандидат ни при каких обстоятельствах не может быть искомым треком!
+    meaningful_track_tokens = track_title_tokens - _TITLE_STOP_WORDS
+    if meaningful_track_tokens:
+        meaningful_overlap = _overlap_ratio(meaningful_track_tokens, cand_title_tokens)
+        if meaningful_overlap == 0.0:
+            return 0.0
+    elif track_title_tokens and title_overlap == 0.0:
+        return 0.0
+
     # Оценка длительности
     track_s = _duration_s(track.get("duration") or track.get("duration_seconds") or (track.get("duration_ms", 0) / 1000 if track.get("duration_ms") else 0))
     cand_s = _duration_s(cand.get("duration_seconds") or cand.get("duration"))
@@ -147,6 +161,13 @@ def score_candidate(track: Dict, cand: Dict) -> float:
     candidate_versions = _candidate_version_markers(cand)
 
     p_pen = 0.0
+    if meaningful_track_tokens and len(meaningful_track_tokens) >= 2 and _overlap_ratio(meaningful_track_tokens, cand_title_tokens) < 0.34:
+        p_pen += 0.35
+
+    artist_in_cand = artist_overlap > 0.0 or (track_artist_tokens and _overlap_ratio(track_artist_tokens, cand_title_tokens) > 0.0)
+    if track_artist_tokens and not artist_in_cand:
+        p_pen += 0.40
+
     for t in _PENALTY_TERMS:
         if t in titleblob and t not in requested_title:
             p_pen += 0.20
@@ -339,8 +360,11 @@ def find_best_youtube_match(
         s = c["score"]
         conf_ok = 1 if s >= CONFIDENCE_MIN else 0
         is_music = 1 if c.get("source") == "music" else 0
+        # Tier по оценке (шаг 5%), чтобы близкие оценки ранжировались по качеству (music source, explicit),
+        # но трек с низким score никогда не обгонял трек с высоким score
+        tier = round(s * 20)
         is_explicit = 1 if (not clean_requested and c.get("isExplicit")) else 0
-        return (conf_ok, is_explicit, is_music if conf_ok else 0, s)
+        return (conf_ok, tier, is_music, is_explicit, s)
 
     scored.sort(key=sort_key, reverse=True)
     best = scored[0]

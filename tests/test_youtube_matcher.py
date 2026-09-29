@@ -94,3 +94,38 @@ def test_score_text_candidate_explicit_remix_request():
     s_remix = score_text_candidate("Nothing Is Safe (Loraine James Remix)", "clipping.", q)
     assert s_remix > s_clean
     assert s_remix > 0.8
+
+def test_score_zero_title_overlap_rejected():
+    track = {
+        "artist": "Death Grips",
+        "title": "Spread Eagle Cross the Block (vocal)",
+        "duration": 232,
+        "explicit": True
+    }
+    cand_wrong_song = {
+        "title": "System Blower",
+        "author": "Death Grips - Topic",
+        "artists": [{"name": "Death Grips"}],
+        "duration_seconds": 224,
+        "isExplicit": True,
+        "source": "music"
+    }
+    score = score_candidate(track, cand_wrong_song)
+    assert score == 0.0
+
+def test_score_title_overlap_requires_meaningful_tokens():
+    track = {
+        "artist": "The Weeknd",
+        "title": "In The Night",
+        "duration": 235
+    }
+    # Candidate shares only stop words "in", "the", but meaningful word "Night" is missing
+    cand_only_stopwords = {
+        "title": "In The Morning",
+        "author": "The Weeknd - Topic",
+        "artists": [{"name": "The Weeknd"}],
+        "duration_seconds": 235
+    }
+    score = score_candidate(track, cand_only_stopwords)
+    assert score == 0.0
+

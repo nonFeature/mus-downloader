@@ -200,7 +200,7 @@ def test_query_store_put_and_get():
         # Проверка истечения TTL
         short_store = bot.QueryStore(max_items=10, ttl_seconds=0.05)
         await short_store.put("expire_me", {"data": "old"})
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.1)
         assert await short_store.get("expire_me") is None
 
     asyncio.run(run())

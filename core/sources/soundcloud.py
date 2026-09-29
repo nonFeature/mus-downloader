@@ -3,7 +3,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 import yt_dlp
 
 from .ytdlp_opts import js_runtime_opts
@@ -20,7 +20,8 @@ def download_soundcloud_track(
     artist: str = "",
     title: str = "",
     duration: Optional[float] = None,
-    album: Optional[str] = None
+    album: Optional[str] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Скачивает трек с SoundCloud в оригинальном формате и битрейте (без апскейла/раздувания до 320 kbps).
@@ -56,6 +57,35 @@ def download_soundcloud_track(
         'noplaylist': True,
     }
     ydl_opts.update(js_runtime_opts())
+
+    if progress_callback:
+        def sc_hook(d):
+            try:
+                st = d.get('status')
+                if st == 'downloading':
+                    dl = d.get('downloaded_bytes', 0)
+                    tot = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    spd = d.get('speed')
+                    eta_val = d.get('eta')
+                    progress_callback({
+                        "stage": "download",
+                        "source": "SoundCloud",
+                        "description": "SoundCloud: скачивание трека...",
+                        "downloaded_bytes": dl,
+                        "total_bytes": tot,
+                        "speed": spd,
+                        "eta": eta_val,
+                    })
+                elif st == 'finished':
+                    progress_callback({
+                        "stage": "transcode",
+                        "source": "SoundCloud",
+                        "description": "SoundCloud: обработка аудиопотока...",
+                        "percent": 90,
+                    })
+            except Exception:
+                pass
+        ydl_opts['progress_hooks'] = [sc_hook]
 
     temp_downloaded: Optional[Path] = None
     info = None

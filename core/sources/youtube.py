@@ -16,6 +16,30 @@ def _clean_filename(name: str) -> str:
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:120]
 
+def extract_youtube_video_id(url: str) -> Optional[str]:
+    """
+    Извлекает 11-значный videoId из любого формата ссылки YouTube:
+    - youtube.com/watch?v=...
+    - youtu.be/...
+    - music.youtube.com/watch?v=...
+    - youtube.com/shorts/...
+    - youtube.com/embed/...
+    - youtube.com/live/...
+    """
+    if not url:
+        return None
+    url_str = str(url).strip().strip("'\"")
+    patterns = [
+        r"(?:v=|\/v\/|embed\/|watch\?v=|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11})",
+        r"(?:music\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})",
+        r"^([a-zA-Z0-9_-]{11})$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url_str)
+        if m:
+            return m.group(1)
+    return None
+
 def _detect_audio_info(src_path: Path, ytdl_info: Optional[dict] = None) -> tuple[str, Optional[int]]:
     """
     Определяет аудиокодек и примерный битрейт (в kbps) исходного файла.
@@ -160,6 +184,7 @@ def download_youtube_track(
     direct_url: Optional[str] = None,
     explicit: Optional[bool] = None,
     status_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Optional[Path]:
     """
     Ищет и скачивает трек с YouTube Music по алгоритму CSVMusic (с валидацией длительности
@@ -171,12 +196,13 @@ def download_youtube_track(
     target_url = None
 
     def _notify(msg: str) -> None:
-        print(msg)
         if status_callback:
             try:
                 status_callback(msg)
             except Exception:
                 pass
+        else:
+            print(msg)
 
     # 0. Если передана прямая ссылка SoundCloud, скачиваем оригинал через модуль soundcloud
     if direct_url and ("soundcloud.com" in direct_url.lower() or "on.soundcloud.com" in direct_url.lower()):
@@ -194,11 +220,8 @@ def download_youtube_track(
     if direct_url and ("youtube.com" in direct_url or "youtu.be" in direct_url):
         target_url = direct_url
         _notify("[*] YouTube: прямая ссылка...")
-        v_match = re.search(r"(?:v=|youtu\.be/|embed/|watch\?v=)([\w-]{11})", direct_url)
-        if v_match:
-            video_id = v_match.group(1)
-        else:
-            video_id = "direct"
+        extracted_id = extract_youtube_video_id(direct_url)
+        video_id = extracted_id if extracted_id else "direct"
     else:
         # 2. Умный поиск через YouTube Music (CSVMusic алгоритм)
         _notify(f"[*] YouTube Music: поиск '{artist} - {title}'...")
@@ -213,24 +236,33 @@ def download_youtube_track(
 
         if not best_match:
             if options:
-                print(f"[!] YouTube Music: кандидат '{options[0]['title']}' отклонен ({score:.2f} < 0.60)")
+                _notify(f"[!] YouTube Music: кандидат '{options[0]['title']}' отклонен ({score:.2f} < 0.60)")
             else:
-                print("[!] YouTube Music: нет подходящих результатов")
+                _notify("[!] YouTube Music: нет подходящих результатов")
             return None
 
         video_id = best_match["videoId"]
         target_url = f"https://music.youtube.com/watch?v={video_id}"
         _notify(f"[+] YouTube Music: выбран '{best_match['title']}' ({int(score*100)}%)")
 
-    safe_artist = _clean_filename(artist or "Unknown Artist")
-    safe_title = _clean_filename(title or "Unknown Track")
+    clean_artist = artist or "Unknown Artist"
+    clean_title = title or "Unknown Track"
+    # Предотвращаем дублирование имени исполнителя в названии трека
+    if clean_artist and clean_title.lower().startswith(clean_artist.lower() + " - "):
+        clean_title = clean_title[len(clean_artist) + 3:].strip()
+    elif clean_artist and clean_title.lower().startswith(clean_artist.lower() + ": "):
+        clean_title = clean_title[len(clean_artist) + 2:].strip()
+
+    safe_artist = _clean_filename(clean_artist)
+    safe_title = _clean_filename(clean_title)
     final_filename = f"{safe_artist} - {safe_title}.mp3"
     final_path = dest_dir / final_filename
 
     temp_out_template = str(dest_dir / f"temp_{video_id}_%(id)s.%(ext)s")
 
     # 3. Скачивание лучшего аудиопотока через yt-dlp
-    _notify(f"[*] YouTube Music: скачивание трека ({safe_artist} - {safe_title})...")
+    service_label = "YouTube" if (direct_url and ("youtube.com" in direct_url or "youtu.be" in direct_url)) else "YouTube Music"
+    _notify(f"[*] {service_label}: скачивание трека ({safe_artist} - {safe_title})...")
     ydl_opts = {
         'format': 'bestaudio[abr>=128]/bestaudio/best',
         'outtmpl': temp_out_template,
@@ -242,6 +274,35 @@ def download_youtube_track(
         'noplaylist': True,
     }
     ydl_opts.update(js_runtime_opts())
+
+    if progress_callback:
+        def ytdl_hook(d):
+            try:
+                st = d.get('status')
+                if st == 'downloading':
+                    dl = d.get('downloaded_bytes', 0)
+                    tot = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    spd = d.get('speed')
+                    eta_val = d.get('eta')
+                    progress_callback({
+                        "stage": "download",
+                        "source": service_label,
+                        "description": f"{service_label}: скачивание аудиопотока...",
+                        "downloaded_bytes": dl,
+                        "total_bytes": tot,
+                        "speed": spd,
+                        "eta": eta_val,
+                    })
+                elif st == 'finished':
+                    progress_callback({
+                        "stage": "transcode",
+                        "source": service_label,
+                        "description": f"{service_label}: поток загружен, обработка...",
+                        "percent": 88,
+                    })
+            except Exception:
+                pass
+        ydl_opts['progress_hooks'] = [ytdl_hook]
 
     temp_downloaded: Optional[Path] = None
     try:
@@ -270,6 +331,13 @@ def download_youtube_track(
     codec, abr = _detect_audio_info(temp_downloaded, info)
     target_bitrate = _select_mp3_bitrate(codec, abr)
     _notify(f"[*] YouTube: конвертация {codec}/{abr or '?'}k -> MP3 {target_bitrate} CBR...")
+    if progress_callback:
+        progress_callback({
+            "stage": "transcode",
+            "source": service_label,
+            "description": f"{service_label}: конвертация {codec}/{abr or '?'}k -> MP3 {target_bitrate} CBR...",
+            "percent": 92,
+        })
     success = _transcode_to_mp3(temp_downloaded, final_path, bitrate=target_bitrate)
 
     # Очищаем временный файл
@@ -279,6 +347,13 @@ def download_youtube_track(
         pass
 
     if success and final_path.exists():
+        if progress_callback:
+            progress_callback({
+                "stage": "done",
+                "source": service_label,
+                "description": f"{service_label}: готов {final_path.name}",
+                "percent": 100,
+            })
         print(f"[+] YouTube: готов {final_path.name}")
         return final_path
     else:

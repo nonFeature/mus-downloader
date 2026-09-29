@@ -14,7 +14,9 @@ def _query_doh(host: str) -> List[str]:
     ctx = ssl.create_default_context()
     for endpoint in (
         f"https://1.1.1.1/dns-query?name={host}&type=A",
-        f"https://dns.google/resolve?name={host}&type=A"
+        f"https://dns.google/resolve?name={host}&type=A",
+        f"https://cloudflare-dns.com/dns-query?name={host}&type=A",
+        f"https://common.dot.dns.yandex.net/dns-query?name={host}&type=A",
     ):
         try:
             req = urllib.request.Request(

@@ -45,7 +45,27 @@ _STRINGS: dict[str, dict[str, str]] = {
 <i>Практически</i> все стриминговые платформы, и просто поиск, по типу <code>On the level Mac DeMarco</code>
 
 <b>Команды:</b>
-• /quality: качество по умолчанию""",
+• /settings: настройки качества и режима поиска
+• /search &lt;запрос&gt; или /s: поиск с выбором вариантов
+• /quality: быстрое переключение качества""",
+        "cmd.search_prompt": "{emoji_search} Напиши поисковый запрос вместе с командой:\n<code>/search Queen Bohemian Rhapsody</code>\nили <code>/s Daft Punk</code>",
+        "settings.title": """{emoji_settings} <b>Настройки бота</b>
+
+Качество по умолчанию: <b>{current_pref}</b>
+Режим поиска: <b>{current_search_mode}</b>
+
+<i>Нажми кнопку ниже, чтобы изменить:</i>""",
+        "settings.saved_alert": "{emoji_check} Настройки сохранены",
+        "search.mode_best": "🎯 Сразу лучший",
+        "search.mode_list": "📋 Список вариантов",
+        "search.title": """{emoji_search} <b>Результаты поиска для:</b> <i>«{query}»</i>
+
+{results_text}
+
+<i>Выбери номер трека кнопкой ниже:</i>""",
+        "search.not_found": "{emoji_cross} <b>Ничего не найдено</b> по запросу: <i>«{query}»</i>.",
+        "search.cancelled": "{emoji_cross} Поиск отменен.",
+        "btn.cancel": "Отмена",
         "settings.quality_title": """{emoji_settings} <b>Настройка качества по умолчанию</b>
 
 Сейчас: <b>{current_pref}</b>
@@ -128,7 +148,27 @@ Send a <b>track link</b> or type a <b>track name</b> (Artist - Title). I'll grab
 <i>Pretty much</i> every streaming platform, plus plain search like <code>On the level Mac DeMarco</code>
 
 <b>Commands:</b>
-• /quality: default format""",
+• /settings: quality and search mode settings
+• /search &lt;query&gt; or /s: multi-source search with interactive selection
+• /quality: quick quality switcher""",
+        "cmd.search_prompt": "{emoji_search} Please provide a query with the command:\n<code>/search Queen Bohemian Rhapsody</code>\nor <code>/s Daft Punk</code>",
+        "settings.title": """{emoji_settings} <b>Bot Settings</b>
+
+Default quality: <b>{current_pref}</b>
+Search mode: <b>{current_search_mode}</b>
+
+<i>Tap a button below to change:</i>""",
+        "settings.saved_alert": "{emoji_check} Settings saved",
+        "search.mode_best": "🎯 Best match",
+        "search.mode_list": "📋 Choice list",
+        "search.title": """{emoji_search} <b>Search results for:</b> <i>\"{query}\"</i>
+
+{results_text}
+
+<i>Select a track number using the buttons below:</i>""",
+        "search.not_found": "{emoji_cross} <b>No results found</b> for: <i>\"{query}\"</i>.",
+        "search.cancelled": "{emoji_cross} Search cancelled.",
+        "btn.cancel": "Cancel",
         "settings.quality_title": """{emoji_settings} <b>Default quality</b>
 
 Now: <b>{current_pref}</b>
