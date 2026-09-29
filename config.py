@@ -35,6 +35,40 @@ DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
 SONGLINK_API_KEY = (os.getenv("SONGLINK_API_KEY") or os.getenv("ODESLI_API_KEY", "")).strip().strip("'\"")
 VK_TOKEN = (os.getenv("VK_TOKEN") or os.getenv("VK_ACCESS_TOKEN", "")).strip().strip("'\"")
 
+# User-Agent для внешних API.
+#
+# Два разных UA, потому что требования противоположны:
+#
+# BROWSER_USER_AGENT - для CDN и агрегаторов (Deezer, iTunes, обложки,
+#   VK, SoundCloud). Многие из них режут запросы с не-браузерным UA или
+#   отдают урезанные ответы, поэтому там нужен вид нормального браузера.
+#
+# USER_AGENT - идентифицирующий, для MusicBrainz и Cover Art Archive.
+#   Там явным текстом просят: имя приложения, версию и КОНТАКТНЫЙ адрес.
+#   Браузерный UA там считается маскировкой и приводит к блокировке.
+#
+# Подставлять чужой адрес нельзя: жалобы и блокировки прилетят к человеку,
+# который об этом не знает. Укажи свою почту через CONTACT_EMAIL.
+BROWSER_USER_AGENT = os.getenv(
+    "BROWSER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+).strip()
+
+USER_AGENT = os.getenv("USER_AGENT", "mus-downloader/0.1 ( https://github.com/ )").strip()
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "").strip().strip("'\"")
+
+
+def build_user_agent(extra: str = "") -> str:
+    """
+    Собирает идентифицирующий User-Agent в формате, который ждут
+    MusicBrainz и Cover Art Archive: ``<name>/<version> ( <contact> )``.
+    """
+    base = USER_AGENT
+    if CONTACT_EMAIL and CONTACT_EMAIL not in base:
+        base = f"{base} {CONTACT_EMAIL}"
+    return f"{base} {extra}".strip() if extra else base
+
 # Путь для сохранения скачанных треков
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./downloads"))
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

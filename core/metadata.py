@@ -8,7 +8,10 @@ import config
 from . import coverart
 from . import cache as cache_mod
 
-USER_AGENT = "MusicDownloader/1.0 (akate@gmail.com)"
+USER_AGENT = config.BROWSER_USER_AGENT
+# MusicBrainz и Cover Art Archive (проект MetaBrainz) требуют
+# идентифицирующий User-Agent с контактом и режут браузерные.
+MB_USER_AGENT = config.build_user_agent("(+metadata)")
 
 def resolve_spotify_track(url: str) -> Optional[dict]:
     """Извлекает метаданные трека напрямую со страницы Spotify."""
@@ -480,7 +483,7 @@ def fetch_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
+        resp = httpx.get(url, params=params, headers={"User-Agent": MB_USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
@@ -499,7 +502,7 @@ def fetch_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[
         "fmt": "json"
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
+        resp = httpx.get(url, params=params, headers={"User-Agent": MB_USER_AGENT}, timeout=httpx.Timeout(2.5, connect=2.0))
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -671,7 +674,7 @@ def search_musicbrainz_by_text(artist: str, title: str) -> Optional[dict]:
         "limit": 5
     }
     try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(4.5, connect=3.0))
+        resp = httpx.get(url, params=params, headers={"User-Agent": MB_USER_AGENT}, timeout=httpx.Timeout(4.5, connect=3.0))
         if resp.status_code == 200:
             data = resp.json()
             recordings = data.get("recordings", [])
@@ -1040,7 +1043,7 @@ def fetch_coverartarchive_art(release_id: str, size: int = 0) -> Optional[str]:
     for candidate in candidates:
         url = f"https://coverartarchive.org/release/{release_id}/front-{candidate}"
         try:
-            r = httpx.head(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=4.0)
+            r = httpx.head(url, headers={"User-Agent": MB_USER_AGENT}, follow_redirects=True, timeout=4.0)
             if r.status_code == 200:
                 return str(r.url)
         except Exception:

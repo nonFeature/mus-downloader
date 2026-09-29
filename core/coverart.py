@@ -19,14 +19,13 @@ from typing import Optional
 
 import httpx
 
+import config
+
 # Целевые размеры обложки по качеству аудиофайла.
 COVER_SIZE_LOSSLESS = 1400
 COVER_SIZE_LOSSY = 768
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
+USER_AGENT = config.BROWSER_USER_AGENT
 
 # Реально достижимые размеры по источникам. Используются для ранжирования,
 # когда скачать и промерить кандидата не удалось.

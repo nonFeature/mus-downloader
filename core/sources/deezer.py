@@ -6,6 +6,8 @@ from pathlib import Path
 from Crypto.Cipher import Blowfish
 from typing import Optional, Callable
 
+import config
+
 PROXY_API = "https://lufts-dzmedia.fly.dev/get_url"
 SECRET = b"g4el58wc0zvf9na1"
 
@@ -284,7 +286,7 @@ def search_deezer_track(
                 r_alb = httpx.get(
                     "https://api.deezer.com/search/album",
                     params={"q": aq, "limit": 3},
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+                    headers={"User-Agent": config.BROWSER_USER_AGENT},
                     timeout=httpx.Timeout(6.0, connect=4.0)
                 )
                 if r_alb.status_code == 200:
@@ -293,7 +295,7 @@ def search_deezer_track(
                         if alb_id:
                             r_trks = httpx.get(
                                 f"https://api.deezer.com/album/{alb_id}/tracks",
-                                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+                                headers={"User-Agent": config.BROWSER_USER_AGENT},
                                 timeout=httpx.Timeout(6.0, connect=4.0)
                             )
                             if r_trks.status_code == 200:
@@ -338,7 +340,7 @@ def search_deezer_track(
             r = httpx.get(
                 "https://api.deezer.com/search",
                 params={"q": query, "limit": 15},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+                headers={"User-Agent": config.BROWSER_USER_AGENT},
                 timeout=httpx.Timeout(10.0, connect=6.0)
             )
             if r.status_code != 200:
