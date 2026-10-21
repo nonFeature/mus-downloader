@@ -191,39 +191,52 @@ class WhitelistMiddleware(BaseMiddleware):
 
 def _process_image_to_telegram_thumbnail(raw_bytes: bytes, temp_dir: Path) -> Optional[Path]:
     """
-    Преобразует произвольное изображение в валидный thumbnail для Telegram:
+    Преобразует произвольное изображение в качественный валидный thumbnail для Telegram:
     - Формат: JPEG
     - Размер: <= 200 КБ
-    - Разрешение: до 320x320
+    - Разрешение: до 800x800 (для чёткого отображения в плеере Telegram на Retina-экранах)
     """
     if not raw_bytes or len(raw_bytes) < 100:
         return None
 
-    raw_path = temp_dir / f"thumb_raw_{uuid.uuid4().hex}"
     out_path = temp_dir / f"thumb_{uuid.uuid4().hex}.jpg"
+
+    # 1. Если исходник уже JPEG <= 200 КБ и не превышает 800x800 — используем напрямую без пересжатия
+    if len(raw_bytes) <= 200 * 1024 and raw_bytes.startswith(b"\xff\xd8\xff"):
+        from core import coverart
+        dim = coverart.probe_image_size(raw_bytes)
+        if dim and max(dim) <= 800:
+            try:
+                out_path.write_bytes(raw_bytes)
+                return out_path
+            except Exception:
+                pass
+
+    raw_path = temp_dir / f"thumb_raw_{uuid.uuid4().hex}"
     try:
         raw_path.write_bytes(raw_bytes)
     except Exception:
         return None
 
-    # 1. Попытка через ffmpeg смасштабировать до 320x320 и сжать в JPEG
+    # 2. Масштабируем через ffmpeg: сначала пробуем 800x800 с высоким качеством,
+    # если не уложились в 200 КБ — каскадно снижаем разрешение/качество
     try:
-        cmd = [
-            "ffmpeg", "-y", "-i", str(raw_path),
-            "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
-            "-q:v", "3",
-            str(out_path)
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        if res.returncode == 0 and out_path.exists() and 0 < out_path.stat().st_size <= 200 * 1024:
-            return out_path
+        for scale, q in [("800:800", "2"), ("640:640", "3"), ("320:320", "3")]:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(raw_path),
+                "-vf", f"scale={scale}:force_original_aspect_ratio=decrease",
+                "-q:v", q,
+                str(out_path)
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            if res.returncode == 0 and out_path.exists() and 0 < out_path.stat().st_size <= 200 * 1024:
+                return out_path
     except Exception:
         pass
     finally:
         raw_path.unlink(missing_ok=True)
 
-    # 2. Если ffmpeg недоступен или не сработал:
-    # Проверяем, является ли исходный файл уже валидным JPEG <= 200 КБ
+    # 3. Резервный фолбек: если ffmpeg недоступен, но исходник — валидный JPEG <= 200 КБ
     if len(raw_bytes) <= 200 * 1024 and raw_bytes.startswith(b"\xff\xd8\xff"):
         try:
             out_path.write_bytes(raw_bytes)

@@ -781,6 +781,29 @@ def test_prepare_thumbnail_ffmpeg_scaling(tmp_path):
         assert res.exists()
 
 
+def test_prepare_thumbnail_preserves_high_res_jpeg_under_200kb(tmp_path):
+    """Обложка JPEG 800x800 размером до 200 КБ сохраняет полное разрешение 800x800."""
+    import io
+    from PIL import Image
+    from core import coverart
+
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 800), color=(100, 150, 200)).save(buf, format="JPEG", quality=90)
+    img_data = buf.getvalue()
+    assert len(img_data) <= 200 * 1024
+
+    with patch("bot.tagger.download_cover_art", return_value=(img_data, "image/jpeg")):
+        res = bot.prepare_thumbnail(
+            file_path=tmp_path / "song.mp3",
+            album_art_url="https://example.com/800.jpg",
+            temp_dir=tmp_path
+        )
+        assert res is not None
+        assert res.exists()
+        dim = coverart.probe_image_size(res.read_bytes())
+        assert dim == (800, 800)
+
+
 def test_run_download_thumbnail_failure_retries_without(tmp_path):
     """При сбое отправки с миниатюрой происходит повторная отправка без неё."""
     async def run():
