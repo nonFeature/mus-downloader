@@ -3,7 +3,7 @@ Tests for quality-aware cover art resolution.
 
 Cover policy under test:
   * lossless containers (.flac/.wav) -> 1400x1400
-  * lossy containers (.mp3/.m4a/.opus) -> 768x768
+  * lossy containers (.mp3/.m4a/.opus) -> 800x800
 
 The unit tests are hermetic. The live tests at the bottom actually hit the
 CDNs and are opt-in via ``MUS_LIVE_TESTS=1``.
@@ -67,26 +67,26 @@ def test_rewrite_deezer_url_to_target_size():
     assert coverart.resize_dzcdn_url(url, 1400) == (
         "https://e-cdns-images.dzcdn.net/images/cover/2e01/1400x1400-000000-80-0-0.jpg"
     )
-    assert coverart.resize_dzcdn_url(url, 768).endswith("/768x768-000000-80-0-0.jpg")
+    assert coverart.resize_dzcdn_url(url, 800).endswith("/800x800-000000-80-0-0.jpg")
 
 
 def test_rewrite_deezer_preserves_hash_path():
     url = "https://e-cdns-images.dzcdn.net/images/cover/abcdef0123/1000x1000-000000-80-0-0.jpg"
-    out = coverart.resize_dzcdn_url(url, 768)
+    out = coverart.resize_dzcdn_url(url, 800)
     assert "/images/cover/abcdef0123/" in out
     assert "1000x1000" not in out
 
 
 def test_rewrite_itunes_url_to_target_size():
     url = "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/de/eb/63/abc/4050.jpg/100x100bb.jpg"
-    assert coverart.resize_itunes_url(url, 768) == (
-        "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/de/eb/63/abc/4050.jpg/768x768bb.jpg"
+    assert coverart.resize_itunes_url(url, 800) == (
+        "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/de/eb/63/abc/4050.jpg/800x800bb.jpg"
     )
 
 
 def test_rewrite_coverartarchive_clamps_to_available_sizes():
     url = "https://coverartarchive.org/release/rel-123/front-500"
-    assert coverart.resize_coverartarchive_url(url, 768) == (
+    assert coverart.resize_coverartarchive_url(url, 800) == (
         "https://coverartarchive.org/release/rel-123/front-1200"
     )
     assert coverart.resize_coverartarchive_url(url, 300).endswith("front-500")
@@ -112,8 +112,8 @@ def test_estimate_max_size_prefers_native_deezer_master_over_itunes():
 
 
 def test_estimate_max_size_ranks_small_sources_low():
-    assert coverart.estimate_max_size("https://i1.sndcdn.com/art-t500x500.jpg") < 768
-    assert coverart.estimate_max_size("https://i.scdn.co/image/abc") < 768
+    assert coverart.estimate_max_size("https://i1.sndcdn.com/art-t500x500.jpg") < 800
+    assert coverart.estimate_max_size("https://i.scdn.co/image/abc") < 800
     assert coverart.estimate_max_size("") == 0
 
 
@@ -159,8 +159,8 @@ def test_fetch_best_cover_art_rewrites_every_candidate_to_target_size():
             return_value="https://e-cdns-images.dzcdn.net/images/cover/h/1000x1000-000000-80-0-0.jpg",
         ),
     ):
-        art = fetch_best_cover_art(artist="A", album="B", target_size=768)
-        assert "768x768" in art
+        art = fetch_best_cover_art(artist="A", album="B", target_size=800)
+        assert "800x800" in art
 
 
 def test_fetch_best_cover_art_returns_none_when_all_sources_empty():
@@ -182,20 +182,20 @@ def test_fetch_best_cover_art_returns_none_when_all_sources_empty():
 # --------------------------------------------------------------------------
 
 def test_fit_resizes_small_square_cover_up_to_target():
-    out, mime = coverart.fit_cover_art(make_image(500, 500), 768)
+    out, mime = coverart.fit_cover_art(make_image(500, 500), 800)
     assert mime == "image/jpeg"
-    assert coverart.probe_image_size(out) == (768, 768)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_fit_downsizes_large_cover_to_target():
-    out, _ = coverart.fit_cover_art(make_image(1400, 1400), 768)
-    assert coverart.probe_image_size(out) == (768, 768)
+    out, _ = coverart.fit_cover_art(make_image(1400, 1400), 800)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_fit_keeps_exact_size_untouched():
-    data = make_image(768, 768)
-    out, _ = coverart.fit_cover_art(data, 768)
-    assert coverart.probe_image_size(out) == (768, 768)
+    data = make_image(800, 800)
+    out, _ = coverart.fit_cover_art(data, 800)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_fit_does_not_blow_up_tiny_cover_to_lossless_target():
@@ -205,8 +205,8 @@ def test_fit_does_not_blow_up_tiny_cover_to_lossless_target():
 
 
 def test_fit_crops_widescreen_to_square_then_resizes():
-    out, _ = coverart.fit_cover_art(make_image(1280, 720), 768)
-    assert coverart.probe_image_size(out) == (768, 768)
+    out, _ = coverart.fit_cover_art(make_image(1280, 720), 800)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_fit_without_target_size_only_squares():
@@ -217,15 +217,15 @@ def test_fit_without_target_size_only_squares():
 
 def test_fit_handles_garbage_bytes_gracefully():
     payload = b"definitely not an image"
-    out, _ = coverart.fit_cover_art(payload, 768)
+    out, _ = coverart.fit_cover_art(payload, 800)
     assert out == payload
 
 
 def test_target_size_for_quality():
     assert coverart.target_size_for("FLAC") == 1400
-    assert coverart.target_size_for("MP3") == 768
+    assert coverart.target_size_for("MP3") == 800
     assert coverart.target_size_for("flac") == 1400
-    assert coverart.target_size_for("") == 768
+    assert coverart.target_size_for("") == 800
 
 
 # --------------------------------------------------------------------------
@@ -233,9 +233,9 @@ def test_target_size_for_quality():
 # --------------------------------------------------------------------------
 
 def test_process_cover_art_to_square_respects_target_size():
-    out, mime = process_cover_art_to_square(make_image(1000, 1000), 768)
+    out, mime = process_cover_art_to_square(make_image(1000, 1000), 800)
     assert mime == "image/jpeg"
-    assert coverart.probe_image_size(out) == (768, 768)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_download_cover_art_prefers_higher_resolution_variant(monkeypatch):
@@ -246,8 +246,8 @@ def test_download_cover_art_prefers_higher_resolution_variant(monkeypatch):
             return make_image(1000, 1000), "image/jpeg"
         if "1400x1400" in url:
             return make_image(1400, 1400), "image/jpeg"
-        if "768x768" in url:
-            return make_image(768, 768), "image/jpeg"
+        if "800x800" in url:
+            return make_image(800, 800), "image/jpeg"
         return None, None
 
     monkeypatch.setattr(coverart, "download_image", fake_download)
@@ -258,28 +258,28 @@ def test_download_cover_art_prefers_higher_resolution_variant(monkeypatch):
 
 
 def test_download_cover_art_rejects_lie_and_picks_honest_candidate(monkeypatch):
-    """A URL that promises 1400 but serves 500 must not win over a real 768."""
+    """A URL that promises 1400 but serves 500 must not win over a real 800."""
 
     def fake_download(url, timeout=12.0):
         if "lies" in url:
             return make_image(500, 500), "image/jpeg"
         if "honest" in url:
-            return make_image(768, 768), "image/jpeg"
+            return make_image(800, 800), "image/jpeg"
         return None, None
 
     monkeypatch.setattr(coverart, "download_image", fake_download)
 
-    out, _ = download_cover_art("https://example.com/lies/1400x1400.jpg", 768)
-    assert coverart.probe_image_size(out) == (768, 768)
+    out, _ = download_cover_art("https://example.com/lies/1400x1400.jpg", 800)
+    assert coverart.probe_image_size(out) == (800, 800)
 
 
 def test_download_cover_art_returns_none_when_nothing_responds(monkeypatch):
     monkeypatch.setattr(coverart, "download_image", lambda url, timeout=12.0: (None, None))
-    assert download_cover_art("https://example.com/art.jpg", 768) == (None, None)
+    assert download_cover_art("https://example.com/art.jpg", 800) == (None, None)
 
 
 def test_download_cover_art_handles_empty_url():
-    assert download_cover_art("", 768) == (None, None)
+    assert download_cover_art("", 800) == (None, None)
 
 
 # --------------------------------------------------------------------------
@@ -295,7 +295,7 @@ live = pytest.mark.skipif(
 @live
 @pytest.mark.allow_network
 def test_live_deezer_serves_exact_requested_size():
-    for size in (768, 1400):
+    for size in (800, 1400):
         url = f"https://e-cdns-images.dzcdn.net/images/cover/2e018122cb56986277102d2041a592c8/{size}x{size}-000000-80-0-0.jpg"
         data, _ = coverart.download_image(url)
         assert data, f"deezer {size} returned nothing"
@@ -309,7 +309,7 @@ def test_live_itunes_serves_exact_requested_size():
         "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/de/eb/63/"
         "deeb63c1-7bc0-9153-cfa3-fd9e4929aacf/4050538826562.jpg/{}x{}bb.jpg"
     )
-    for size in (768, 1400):
+    for size in (800, 1400):
         data, _ = coverart.download_image(base.format(size, size))
         assert data, f"itunes {size} returned nothing"
         assert coverart.probe_image_size(data) == (size, size)
@@ -319,7 +319,7 @@ def test_live_itunes_serves_exact_requested_size():
 @pytest.mark.allow_network
 def test_live_end_to_end_download_produces_target_size():
     url = "https://e-cdns-images.dzcdn.net/images/cover/2e018122cb56986277102d2041a592c8/1000x1000-000000-80-0-0.jpg"
-    for target in (768, 1400):
+    for target in (800, 1400):
         out, mime = download_cover_art(url, target)
         assert out, f"nothing downloaded for target {target}"
         assert mime == "image/jpeg"

@@ -18,7 +18,7 @@ def process_cover_art_to_square(raw_bytes: bytes, target_size: int = 0) -> tuple
     - Если изображение не квадратное (например, превью YouTube 16:9 или 4:3),
       аккуратно кадрирует его в квадрат 1:1 по центру.
     - При ``target_size`` > 0 дополнительно масштабирует до нужного разрешения
-      (1400 для FLAC, 768 для MP3).
+      (1400 для FLAC, 800 для MP3).
     - Сохраняет в высоком качестве (JPEG, quality=95).
     """
     return coverart.fit_cover_art(raw_bytes, target_size)

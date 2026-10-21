@@ -3,7 +3,7 @@
 
 Политика размеров:
   * FLAC -> 1400x1400 (нативный мастер Deezer, лучшее реально доступное)
-  * MP3  -> 768x768  (то, что серверы отдают без интерполяции)
+  * MP3  -> 800x800  (то, что серверы отдают без интерполяции)
 
 Вместо того чтобы доверять URL, модуль меряет реальные пиксели ответа
 (``probe_image_size``) и умеет переписывать размер прямо в ссылке у CDN,
@@ -23,7 +23,7 @@ import config
 
 # Целевые размеры обложки по качеству аудиофайла.
 COVER_SIZE_LOSSLESS = 1400
-COVER_SIZE_LOSSY = 768
+COVER_SIZE_LOSSY = 800
 
 USER_AGENT = config.BROWSER_USER_AGENT
 
@@ -175,7 +175,7 @@ def resize_dzcdn_url(url: str, size: int) -> str:
 
 
 def resize_itunes_url(url: str, size: int) -> str:
-    """iTunes: ``.../<hash>/100x100bb.jpg`` -> ``.../<hash>/768x768bb.jpg``."""
+    """iTunes: ``.../<hash>/100x100bb.jpg`` -> ``.../<hash>/800x800bb.jpg``."""
     if not url:
         return url
     return _ITUNES_SIZE_RE.sub(f"/{size}x{size}bb.jpg", url)
