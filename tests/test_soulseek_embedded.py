@@ -162,6 +162,64 @@ def test_search_soulseek_rejects_other_tracks_from_same_album_folder():
         assert "07 Yeah Right.flac" not in results[0]["slskd_filename"]
 
 
+def test_search_soulseek_multi_artist_fallback_and_matching():
+    """
+    Проверяет, что для трека с двумя авторами (напр. 'Fred again.., Jamie T - Lights Burn Dimmer')
+    поиск Soulseek:
+    1. При отсутствии результатов по полному запросу пробует fallback по основному артисту ('Fred again..').
+    2. Файл пира, подписанный только основным артистом ('Fred again.. - Lights Burn Dimmer.flac'),
+       успешно проходит проверку art_overlap и не отсеивается.
+    """
+    mock_es = MagicMock()
+
+    def fake_search(query_str, timeout=6.0):
+        if "jamie" in query_str.lower():
+            return []
+        if "fred again" in query_str.lower() and "lights burn dimmer" in query_str.lower():
+            return [
+                {
+                    "username": "peer1",
+                    "filename": "Music/Fred again../Lights Burn Dimmer.flac",
+                    "size": 35000000,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                    "bitrate": 950,
+                    "duration": 260,
+                    "has_free_slot": True,
+                    "upload_speed": 1000000,
+                    "queue_length": 0,
+                },
+                {
+                    "username": "peer2",
+                    "filename": "Music/Drake/Lights Burn Dimmer.flac",
+                    "size": 35000000,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                    "bitrate": 950,
+                    "duration": 260,
+                    "has_free_slot": True,
+                    "upload_speed": 1000000,
+                    "queue_length": 0,
+                }
+            ]
+        return []
+
+    mock_es.search.side_effect = fake_search
+
+    with patch.object(EmbeddedSoulseek, "get_instance", return_value=mock_es):
+        results = search_soulseek(
+            artist="Fred again.., Jamie T",
+            title="Lights Burn Dimmer",
+            limit=5,
+            target_quality="FLAC",
+            duration=260
+        )
+
+        assert len(results) == 1
+        assert results[0]["slskd_username"] == "peer1"
+        assert "Lights Burn Dimmer.flac" in results[0]["slskd_filename"]
+
+
 def test_download_soulseek_track_embedded_copies_file(tmp_path):
     mock_es = MagicMock()
     source_flac = tmp_path / "cache" / "Artist - Song.flac"

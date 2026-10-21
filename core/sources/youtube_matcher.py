@@ -220,7 +220,7 @@ def score_candidate(track: Dict, cand: Dict) -> float:
     return min(total, 0.99)
 
 def _strip_noise(title: str) -> str:
-    s = re.sub(r"[\(\[][^\)\]]*[Ff]eat[^\)\]]*[\)\]]", " ", title)
+    s = re.sub(r"[\(\[][^\)\]]*(?:[Ff]eat|[Ww]ith|[Pp]rod)[^\)\]]*[\)\]]", " ", title)
     s = re.sub(r"[\(\[][Oo]fficial[^\)\]]*[\)\]]", " ", s)
     s = re.sub(r"[\(\[][Ll]ive[^\)\]]*[\)\]]", " ", s)
     s = re.sub(r"[\(\[][Rr]emix[^\)\]]*[\)\]]", " ", s)

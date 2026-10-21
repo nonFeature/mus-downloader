@@ -609,6 +609,18 @@ def parse_slskd_quality(
         # Отклоняем (score = 0), чтобы сработал откат на YouTube Music (дает честный MP3 320 CBR)!
         return (f"Low Bitrate ({effective_bitrate}kbps)", 0.0)
 
+def split_artists(artist_str: str) -> List[str]:
+    """
+    Разделяет строку исполнителей на отдельных артистов (по ,, &, feat., ft., with, x, /).
+    Пример: 'Fred again.., Jamie T' -> ['Fred again..', 'Jamie T']
+    """
+    if not artist_str:
+        return []
+    s = re.sub(r"(?i)\s+(?:feat\.?|ft\.?|featuring|with|x|&|vs\.?)\s+", ", ", artist_str)
+    parts = [p.strip() for p in re.split(r"[,]+|\s+/\s+", s) if p.strip()]
+    return parts
+
+
 def search_soulseek(
     artist: str,
     title: str,
@@ -621,6 +633,8 @@ def search_soulseek(
     """
     clean_art = _strip_noise(artist).strip()
     clean_tit = _strip_noise(title).strip()
+    artist_list = split_artists(clean_art)
+    primary_artist = artist_list[0] if artist_list else clean_art
     
     # Для Soulseek формируем чистый поисковый запрос без лишней пунктуации
     query = f"{clean_art} {clean_tit}".strip()
@@ -644,12 +658,30 @@ def search_soulseek(
 
     if es:
         raw_items = es.search(query, timeout=6.0)
-        # Если ничего не нашли, а в названии были маркеры версий или года, пробуем упрощенный запрос
+
+        # 1. Если ничего не нашли и в запросе несколько авторов (фит/коллаборация/сэмпл),
+        # пробуем запрос по основному артисту: на Soulseek пользователи часто называют файлы без соавторов
+        primary_query = ""
+        if not raw_items and len(artist_list) > 1:
+            primary_query = f"{primary_artist} {clean_tit}".strip()
+            primary_query = re.sub(r"[\-\–\—\:\,\.\(\)\[\]\/\\]+", " ", primary_query)
+            primary_query = re.sub(r"\s+", " ", primary_query).strip()
+            if primary_query and primary_query.lower() != query.lower():
+                print(f"[*] Soulseek: повтор по основному артисту: '{primary_query}'...")
+                raw_items = es.search(primary_query, timeout=6.0)
+
+        # 2. Если ничего не нашли, а в названии были маркеры версий или года, пробуем упрощенный запрос
         if not raw_items:
             simplified_tit = re.sub(r"\b(edit|version|remastered|remaster|radio|original|mix|\d{4})\b", " ", clean_tit, flags=re.I)
             simplified_tit = re.sub(r"\s+", " ", simplified_tit).strip()
-            simplified_query = f"{clean_art} {simplified_tit}".strip()
-            if simplified_query and simplified_query.lower() != query.lower():
+            art_for_simple = primary_artist if len(artist_list) > 1 else clean_art
+            simplified_query = f"{art_for_simple} {simplified_tit}".strip()
+            simplified_query = re.sub(r"[\-\–\—\:\,\.\(\)\[\]\/\\]+", " ", simplified_query)
+            simplified_query = re.sub(r"\s+", " ", simplified_query).strip()
+            already_queried = {query.lower()}
+            if primary_query:
+                already_queried.add(primary_query.lower())
+            if simplified_query and simplified_query.lower() not in already_queried:
                 print(f"[*] Soulseek: повтор без спецслов: '{simplified_query}'...")
                 raw_items = es.search(simplified_query, timeout=6.0)
 
@@ -673,44 +705,56 @@ def search_soulseek(
         token = get_slskd_token()
         if token:
             headers = {"Authorization": f"Bearer {token}"}
-            try:
-                resp = httpx.post(f"{SLSKD_URL}/api/v0/searches", json={"searchText": query}, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    search_id = resp.json()["id"]
-                    start_time = time.time()
-                    while time.time() - start_time < 12:
-                        time.sleep(1.5)
-                        status_resp = httpx.get(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers, timeout=5)
-                        if status_resp.status_code == 200:
-                            status_data = status_resp.json()
-                            file_count = status_data.get("fileCount", 0)
-                            is_complete = status_data.get("isComplete", False)
-                            if is_complete or (file_count >= 30 and time.time() - start_time >= 5):
-                                break
-                    resp_results = httpx.get(f"{SLSKD_URL}/api/v0/searches/{search_id}/responses", headers=headers, timeout=10)
-                    if resp_results.status_code == 200:
-                        for response in resp_results.json():
-                            u = response.get("username")
-                            slot = response.get("hasFreeUploadSlot", False)
-                            q_len = response.get("queueLength", 0)
-                            up_spd = response.get("uploadSpeed", 0)
-                            files = response.get("files") or response.get("fileInfos") or []
-                            for f_info in files:
-                                if not f_info.get("isLocked", False):
-                                    raw_candidates.append({
-                                        "username": u,
-                                        "filename": f_info.get("filename", ""),
-                                        "file_info": f_info,
-                                        "has_free_slot": slot,
-                                        "queue_length": q_len,
-                                        "upload_speed": up_spd,
-                                    })
-                    try:
-                        httpx.delete(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers, timeout=5)
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"[!] Soulseek: Ошибка slskd API: {e}")
+            def _perform_slskd_query(search_text: str) -> list:
+                found_items = []
+                try:
+                    resp = httpx.post(f"{SLSKD_URL}/api/v0/searches", json={"searchText": search_text}, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        search_id = resp.json()["id"]
+                        start_time = time.time()
+                        while time.time() - start_time < 12:
+                            time.sleep(1.5)
+                            status_resp = httpx.get(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers, timeout=5)
+                            if status_resp.status_code == 200:
+                                status_data = status_resp.json()
+                                file_count = status_data.get("fileCount", 0)
+                                is_complete = status_data.get("isComplete", False)
+                                if is_complete or (file_count >= 30 and time.time() - start_time >= 5):
+                                    break
+                        resp_results = httpx.get(f"{SLSKD_URL}/api/v0/searches/{search_id}/responses", headers=headers, timeout=10)
+                        try:
+                            httpx.delete(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers, timeout=5)
+                        except Exception:
+                            pass
+                        if resp_results.status_code == 200:
+                            for response in resp_results.json():
+                                u = response.get("username")
+                                slot = response.get("hasFreeUploadSlot", False)
+                                q_len = response.get("queueLength", 0)
+                                up_spd = response.get("uploadSpeed", 0)
+                                files = response.get("files") or response.get("fileInfos") or []
+                                for f_info in files:
+                                    if not f_info.get("isLocked", False):
+                                        found_items.append({
+                                            "username": u,
+                                            "filename": f_info.get("filename", ""),
+                                            "file_info": f_info,
+                                            "has_free_slot": slot,
+                                            "queue_length": q_len,
+                                            "upload_speed": up_spd,
+                                        })
+                except Exception as e:
+                    print(f"[!] Soulseek: Ошибка slskd API: {e}")
+                return found_items
+
+            raw_candidates = _perform_slskd_query(query)
+            if not raw_candidates and len(artist_list) > 1:
+                primary_query = f"{primary_artist} {clean_tit}".strip()
+                primary_query = re.sub(r"[\-\–\—\:\,\.\(\)\[\]\/\\]+", " ", primary_query)
+                primary_query = re.sub(r"\s+", " ", primary_query).strip()
+                if primary_query and primary_query.lower() != query.lower():
+                    print(f"[*] Soulseek (slskd): повтор по основному артисту: '{primary_query}'...")
+                    raw_candidates = _perform_slskd_query(primary_query)
 
     results = []
     rejected_names = 0
@@ -729,8 +773,19 @@ def search_soulseek(
         leaf_stem = Path(filename.replace("\\", "/")).stem
         leaf_tokens = toks(leaf_stem)
         
-        # Артист может находиться как в названии файла, так и в структуре папок
-        art_overlap = len(art_tokens & fn_tokens) / max(1, len(art_tokens))
+        # Артист может находиться как в названии файла, так и в структуре папок.
+        # Для треков с несколькими авторами (коллаборация/фит/сэмпл)
+        # достаточно, чтобы в пути файла содержался основной артист (или любой из соавторов),
+        # иначе файл пира "Fred again - Track" отсеивается из-за отсутствия Jamie T.
+        if len(artist_list) > 1:
+            art_overlap = max(
+                (len(toks(a) & fn_tokens) / max(1, len(toks(a))))
+                for a in artist_list
+                if toks(a)
+            ) if any(toks(a) for a in artist_list) else 0.0
+        else:
+            art_overlap = len(art_tokens & fn_tokens) / max(1, len(art_tokens))
+
         # Название трека ОБЯЗАНО присутствовать именно в имени аудиофайла (leaf stem),
         # чтобы исключить скачивание соседних треков из папки одноименного альбома
         tit_overlap = len(tit_tokens & leaf_tokens) / max(1, len(tit_tokens)) if tit_tokens else 1.0
