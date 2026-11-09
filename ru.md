@@ -31,7 +31,6 @@
 2. **tg bot (`bot/bot.py`)**:
     - написан на aiogram 3
     - инлайн-карточка трека с кнопками выбора качества (FLAC / MP3)
-    - белый список по user ID (`ALLOWED_USERS`)
     - сам рулит локальным `telegram-bot-api` (через docker или бинарник), чтобы обойти лимит Telegram в 50 МБ и отправлять файлы до 2 ГБ
     - блокировка процесса (`SingleInstanceLock`), чтобы два бота не конфликтовали за получение апдейтов
 
@@ -59,7 +58,6 @@ uv sync
 копируем `.env.example` в `.env` и заполняем:
 - `SLSK_USER` и `SLSK_PASS` - аккаунт soulseek (бесплатный, можно зарегистрировать за минуту)
 - `BOT_TOKEN` - токен от @BotFather (если запускаешь бота)
-- `ALLOWED_USERS` - Telegram ID через запятую
 - `LOCAL_BOT_API=true` + `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` - опционально, для отправки файлов тяжелее 50 МБ (до 2 ГБ)
 
 ### 3. запуск

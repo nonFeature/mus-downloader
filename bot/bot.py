@@ -4,7 +4,6 @@ Telegram-бот оболочка для mus-downloader.
 Запуск: uv run python bot.py
 
 Возможности:
-- Управление доступом через белый список ALLOWED_USERS в .env
 - Карточка метаданных с выбором качества (MP3 320k / FLAC Lossless)
 - Настройка качества по умолчанию через команду /quality
 - Нативная отправка аудио (send_audio) с обложкой, артистом, названием и длительностью
@@ -28,10 +27,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional, Set, Union
+from typing import Any, Dict, Optional, Set, Union
 
 import aiohttp
-from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
@@ -40,7 +39,6 @@ from aiogram.types import (
     CallbackQuery,
     FSInputFile,
     Message,
-    TelegramObject,
 )
 
 
@@ -70,7 +68,6 @@ __all__ = [
     "StatusNotifier",
     "user_settings",
     "query_store",
-    "WhitelistMiddleware",
     "create_bot",
     "cleanup_temp_dir",
     "format_duration",
@@ -159,34 +156,6 @@ def cleanup_temp_dir(temp_dir: Path) -> int:
         except Exception as e:
             logger.warning(f"Не удалось удалить временный объект {item}: {e}")
     return removed
-
-
-class WhitelistMiddleware(BaseMiddleware):
-    """
-    Middleware для проверки доступа пользователей по белому списку ALLOWED_USERS.
-    Если пользователь не в списке, запросы отклоняются с информативным сообщением.
-    """
-
-    def __init__(self, allowed_users: Set[int]):
-        self.allowed_users = allowed_users
-
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any],
-    ) -> Any:
-        user = data.get("event_from_user")
-        user_id = user.id if user else None
-
-        # Проверка белого списка
-        is_allowed = bool(user_id is not None and self.allowed_users and user_id in self.allowed_users)
-
-        if not is_allowed:
-            logger.warning(f"Игнорирован запрос от неавторизованного пользователя {user_id}")
-            return None
-
-        return await handler(event, data)
 
 
 def _process_image_to_telegram_thumbnail(raw_bytes: bytes, temp_dir: Path) -> Optional[Path]:
@@ -1171,15 +1140,6 @@ async def main():
         if removed_items > 0:
             logger.info(f"Очищены остаточные временные файлы: удалено {removed_items} объектов.")
 
-        allowed = config.ALLOWED_USERS
-        if not allowed:
-            logger.warning(
-                "ВНИМАНИЕ: ALLOWED_USERS пуст! Ни один пользователь не сможет использовать бота. "
-                "Укажите ваш Telegram ID в .env (параметр ALLOWED_USERS)."
-            )
-        else:
-            logger.info(f"Белый список активен. Разрешено пользователей: {len(allowed)}.")
-
         api_url: Optional[str] = config.BOT_API_SERVER_URL or None
 
         if config.is_local_bot_api_enabled():
@@ -1199,11 +1159,6 @@ async def main():
 
         bot = create_bot(token=token, api_server_url=api_url)
         dp = Dispatcher()
-
-        # Регистрация middleware белого списка пользователей
-        whitelist = WhitelistMiddleware(allowed_users=allowed)
-        dp.message.middleware(whitelist)
-        dp.callback_query.middleware(whitelist)
 
         dp.include_router(router)
 
@@ -1252,7 +1207,6 @@ async def main():
             "\n=======================================================\n"
             "      mus-downloader Telegram Bot запущен и готов!     \n"
             f"  • Временная папка: {config.BOT_TEMP_DIR}\n"
-            f"  • Пользователей в белом списке: {len(allowed)}\n"
             f"  • Сервер Bot API: {api_url or 'Telegram Cloud (50MB)'}\n"
             f"{bot_info}"
             "=======================================================\n"

@@ -76,31 +76,6 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # Конфигурация Telegram-бота
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip().strip("'\"")
 
-def _parse_allowed_users(raw: str) -> set[int]:
-    """Парсит строку с ID пользователей из ALLOWED_USERS (разделитель - запятая)."""
-    users: set[int] = set()
-    if not raw:
-        return users
-    raw = raw.strip().strip("'\"")
-    for item in raw.split(","):
-        item = item.strip().strip("'\"")
-        if not item:
-            continue
-        try:
-            users.add(int(item))
-        except ValueError:
-            pass
-    return users
-
-ALLOWED_USERS: set[int] = _parse_allowed_users(os.getenv("ALLOWED_USERS", ""))
-
-def is_user_allowed(user_id: int | None, allowed_users: set[int] | None = None) -> bool:
-    """Проверяет, разрешен ли доступ пользователю с указанным Telegram ID."""
-    if user_id is None:
-        return False
-    target_users = allowed_users if allowed_users is not None else ALLOWED_USERS
-    return user_id in target_users
-
 BOT_API_SERVER_URL = os.getenv("BOT_API_SERVER_URL", "").strip().strip("'\"").rstrip("/")
 BOT_TEMP_DIR = Path(os.getenv("BOT_TEMP_DIR", str(DOWNLOAD_DIR / "temp_bot")))
 BOT_TEMP_DIR.mkdir(parents=True, exist_ok=True)

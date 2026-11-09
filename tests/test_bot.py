@@ -1,7 +1,6 @@
 """
 Unit tests for Telegram bot wrapper (bot.py).
 Tests cover:
-- Whitelist authorization middleware (access control)
 - Storage management and temp directory cleanup
 - User preferences (UserSettings) and QueryStore caching
 - Command and callback parsing
@@ -25,106 +24,7 @@ import config
 
 
 # =====================================================================
-# 1. Access Control (Whitelist & Parsing)
-# =====================================================================
-
-def test_parse_allowed_users():
-    """Тестирует парсинг списка разрешенных пользователей."""
-    assert config._parse_allowed_users("") == set()
-    assert config._parse_allowed_users("   ") == set()
-    assert config._parse_allowed_users("123, 456, 789") == {123, 456, 789}
-    assert config._parse_allowed_users("123, abc, 456, , -100") == {123, 456, -100}
-
-
-def test_is_user_allowed():
-    """Тестирует функцию проверки доступа пользователя."""
-    allowed = {111, 222, 333}
-    assert config.is_user_allowed(111, allowed) is True
-    assert config.is_user_allowed(999, allowed) is False
-    assert config.is_user_allowed(None, allowed) is False
-    assert config.is_user_allowed(111, set()) is False
-
-
-def test_whitelist_middleware_allowed_user():
-    """Разрешенный пользователь успешно проходит через middleware."""
-    async def run():
-        middleware = bot.WhitelistMiddleware(allowed_users={12345})
-        mock_handler = AsyncMock(return_value="handler_ok")
-        mock_user = MagicMock(spec=User)
-        mock_user.id = 12345
-        mock_event = MagicMock(spec=Message)
-
-        data = {"event_from_user": mock_user}
-        result = await middleware(mock_handler, mock_event, data)
-
-        assert result == "handler_ok"
-        mock_handler.assert_awaited_once_with(mock_event, data)
-
-    asyncio.run(run())
-
-
-def test_whitelist_middleware_rejected_user():
-    """Неавторизованный пользователь молча игнорируется без ответа."""
-    async def run():
-        middleware = bot.WhitelistMiddleware(allowed_users={12345})
-        mock_handler = AsyncMock()
-        mock_user = MagicMock(spec=User)
-        mock_user.id = 99999
-        mock_event = MagicMock(spec=Message)
-        mock_event.answer = AsyncMock()
-
-        data = {"event_from_user": mock_user}
-        result = await middleware(mock_handler, mock_event, data)
-
-        assert result is None
-        mock_handler.assert_not_awaited()
-        mock_event.answer.assert_not_awaited()
-
-    asyncio.run(run())
-
-
-def test_whitelist_middleware_empty_whitelist_rejects():
-    """При пустом ALLOWED_USERS запросы молча игнорируются."""
-    async def run():
-        middleware = bot.WhitelistMiddleware(allowed_users=set())
-        mock_handler = AsyncMock()
-        mock_user = MagicMock(spec=User)
-        mock_user.id = 12345
-        mock_event = MagicMock(spec=Message)
-        mock_event.answer = AsyncMock()
-
-        data = {"event_from_user": mock_user}
-        result = await middleware(mock_handler, mock_event, data)
-
-        assert result is None
-        mock_handler.assert_not_awaited()
-        mock_event.answer.assert_not_awaited()
-
-    asyncio.run(run())
-
-
-def test_whitelist_middleware_callback_rejected():
-    """Неавторизованный клик на кнопку молча игнорируется."""
-    async def run():
-        middleware = bot.WhitelistMiddleware(allowed_users={12345})
-        mock_handler = AsyncMock()
-        mock_user = MagicMock(spec=User)
-        mock_user.id = 77777
-        mock_callback = MagicMock(spec=CallbackQuery)
-        mock_callback.answer = AsyncMock()
-
-        data = {"event_from_user": mock_user}
-        result = await middleware(mock_handler, mock_callback, data)
-
-        assert result is None
-        mock_handler.assert_not_awaited()
-        mock_callback.answer.assert_not_awaited()
-
-    asyncio.run(run())
-
-
-# =====================================================================
-# 2. Storage Management & Temp Cleanup
+# 1. Storage Management & Temp Cleanup
 # =====================================================================
 
 def test_cleanup_temp_dir_creates_if_not_exists(tmp_path):
@@ -154,7 +54,7 @@ def test_cleanup_temp_dir_removes_files_and_folders(tmp_path):
 
 
 # =====================================================================
-# 3. UserSettings & QueryStore
+# 2. UserSettings & QueryStore
 # =====================================================================
 
 def test_user_settings_persistence(tmp_path):
@@ -207,7 +107,7 @@ def test_query_store_put_and_get():
 
 
 # =====================================================================
-# 4. Helpers and Formatters
+# 3. Helpers and Formatters
 # =====================================================================
 
 def test_format_duration():
@@ -257,7 +157,7 @@ def test_build_quality_keyboard():
 
 
 # =====================================================================
-# 5. Commands and Callback Handlers
+# 4. Commands and Callback Handlers
 # =====================================================================
 
 def test_handle_start_command():
@@ -374,7 +274,7 @@ def test_handle_download_callback_valid():
 
 
 # =====================================================================
-# 6. File Size Limits & Cloud Bot API
+# 5. File Size Limits & Cloud Bot API
 # =====================================================================
 
 def test_run_download_cloud_limit_exceeded(tmp_path):
@@ -470,7 +370,7 @@ def test_run_download_failed_reports_error():
 
 
 # =====================================================================
-# 7. Bot Creation & Thumbnail Handling
+# 6. Bot Creation & Thumbnail Handling
 # =====================================================================
 
 def test_create_bot_cloud_and_local():
@@ -643,15 +543,8 @@ def test_handle_track_query_auto_download_mode(tmp_path):
 
 
 # =====================================================================
-# 8. Edge Cases & Robustness Tests
+# 7. Edge Cases & Robustness Tests
 # =====================================================================
-
-def test_parse_allowed_users_quoted_and_whitespace():
-    """Тестирует парсинг списка с кавычками и пробелами."""
-    assert config._parse_allowed_users('"123, 456"') == {123, 456}
-    assert config._parse_allowed_users("'123, 456'") == {123, 456}
-    assert config._parse_allowed_users(' "123", "456" ') == {123, 456}
-
 
 def test_escape_html_edge_cases():
     """Тестирует граничные случаи экранирования HTML (None, 0, спецсимволы)."""
@@ -836,7 +729,7 @@ def test_run_download_thumbnail_failure_retries_without(tmp_path):
 
 
 # =====================================================================
-# 9. Local Telegram Bot API Manager & Lifecycle Tests
+# 8. Local Telegram Bot API Manager & Lifecycle Tests
 # =====================================================================
 
 def test_config_local_bot_api_settings():
@@ -1416,7 +1309,7 @@ def test_main_stop_called_even_if_bot_creation_fails():
 
 
 # =====================================================================
-# 10. Single Instance Lock (Anti-conflict protection)
+# 9. Single Instance Lock (Anti-conflict protection)
 # =====================================================================
 
 def test_single_instance_lock_acquire_and_release(tmp_path):

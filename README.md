@@ -31,7 +31,6 @@ started out as a **cli tool** that was supposed to be the core for other project
 2. **tg bot (`bot/bot.py`)**:
     - built on aiogram 3
     - inline metadata card with quality buttons (FLAC / MP3)
-    - whitelist by user ID (`ALLOWED_USERS`)
     - manages local `telegram-bot-api` (via docker or local binary) to bypass Telegram's 50MB limit and send files up to 2GB
     - single-instance file lock so two bot processes never fight over polling
 
@@ -59,7 +58,6 @@ uv sync
 copy `.env.example` to `.env` and fill in:
 - `SLSK_USER` and `SLSK_PASS` - your soulseek account (free, just create one)
 - `BOT_TOKEN` - from @BotFather (if using telegram bot)
-- `ALLOWED_USERS` - comma-separated telegram user IDs
 - `LOCAL_BOT_API=true` + `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` - optional, for sending files over 50MB up to 2GB
 
 ### 3. run
