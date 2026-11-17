@@ -245,13 +245,24 @@ def extract_apple_token(page_html: str = "", bundles: Optional[list[str]] = None
     return fallback
 
 
+def _get_with_retry(url: str, params: Optional[dict] = None, headers: Optional[dict] = None,
+                    attempts: int = 2) -> Optional[httpx.Response]:
+    """GET с одним повтором: у Apple CDN соединения рвутся регулярно."""
+    for attempt in range(attempts):
+        try:
+            response = httpx.get(url, params=params, headers=headers, timeout=_TIMEOUT)
+            return response
+        except Exception:
+            if attempt + 1 >= attempts:
+                return None
+            time.sleep(0.4)
+    return None
+
+
 def _fetch_apple_token() -> str:
     headers = {"User-Agent": UA, "Accept": "text/html"}
-    try:
-        page = httpx.get(_apple_browse(), headers=headers, timeout=_TIMEOUT, follow_redirects=True)
-    except Exception:
-        return ""
-    if page.status_code != 200:
+    page = _get_with_retry(_apple_browse(), headers=headers)
+    if page is None or page.status_code != 200:
         return ""
     token = extract_apple_token(page.text)
     if token:
@@ -260,11 +271,8 @@ def _fetch_apple_token() -> str:
     bundles: list[str] = []
     for src in re.findall(r'src="([^"]+\.js)"', page.text)[:12]:
         url = src if src.startswith("http") else f"https://music.apple.com{src}"
-        try:
-            bundle = httpx.get(url, headers=headers, timeout=_TIMEOUT)
-        except Exception:
-            continue
-        if bundle.status_code == 200:
+        bundle = _get_with_retry(url, headers=headers)
+        if bundle is not None and bundle.status_code == 200:
             bundles.append(bundle.text)
     return extract_apple_token("", bundles)
 
@@ -441,6 +449,7 @@ def collect_extras(
     sources = sources or tuple(
         name
         for name, enabled in (
+            ("spotify", getattr(config, "SPOTIFY_METADATA", True)),
             ("apple", getattr(config, "APPLE_METADATA", True)),
             ("tidal", getattr(config, "TIDAL_METADATA", True)),
         )
@@ -460,9 +469,16 @@ def collect_extras(
             pass
 
     extras: dict = {}
+    failed = 0
     for name in sources:
         try:
-            if name == "apple":
+            if name == "spotify":
+                from .metadata_spotify import search_spotify_track, spotify_track_extras
+
+                found = search_spotify_track(artist, title, duration=duration)
+                if found and found.get("id"):
+                    _merge(extras, spotify_track_extras(found["id"]))
+            elif name == "apple":
                 found = apple_search_song(artist, title, duration=duration, isrc=isrc)
                 if found:
                     _merge(extras, apple_song_extras(found))
@@ -471,10 +487,14 @@ def collect_extras(
                 if found and found.get("id"):
                     _merge(extras, tidal_track_extras(found["id"]))
         except Exception as exc:  # источник не должен ломать скачивание
+            failed += 1
             print(f"[!] {name}: доп. метаданные недоступны ({exc})")
             continue
 
-    if extras and cache is not None:
+    # Частичный результат не кэшируем: сеть моргнула — и 30 дней в тегах
+    # не хватало бы половины полей. Кэш только для полного прохода и только
+    # когда есть чем его оправдать (ISRC — признак, что источник ответил).
+    if extras and cache is not None and not failed and extras.get("isrc"):
         try:
             cache.set("extras", cache_key, extras, ttl_days=30)
         except Exception:
