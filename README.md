@@ -22,7 +22,7 @@ started out as a **cli tool** that was supposed to be the core for other project
 5. **YouTube Music / YouTube** - fallback matcher using `ytmusicapi` (checks title and duration), then `yt-dlp`
 6. **slskd** - optional fallback to an external slskd daemon if you already have one running
 
-With `PARALLEL_SOURCES=true` (default) sources of each branch **race in parallel** instead of running sequentially (`core/sources/race.py`): FLAC — the fattest actual file wins by bit depth/sample rate (24bit/192kHz short-circuits the rest), MP3 — first to deliver ≥ `RACE_MIN_BITRATE` (default 320 kbps; lossless wins unconditionally), otherwise the best bitrate of the finishers. Losers are cancelled cooperatively and deleted; `RACE_TIMEOUT` caps the whole race. Set `PARALLEL_SOURCES=false` for the classic sequential chains.
+With `PARALLEL_SOURCES=true` (default) sources of each branch **race in parallel** instead of running sequentially (`core/sources/race.py`): FLAC — the fattest actual file wins by bit depth/sample rate (24bit/192kHz short-circuits the rest), MP3 — first to deliver ≥ `RACE_MIN_BITRATE` (default 320 kbps; lossless wins unconditionally), otherwise the best bitrate of the finishers. Losers are cancelled cooperatively and deleted; `RACE_TIMEOUT` caps the whole race. Final output is always normalized: FLAC requests get `.flac`, MP3 requests get honest LAME `.mp3` (source-aware bitrate, no inflation; lossless sources → 320k CBR). Set `PARALLEL_SOURCES=false` for the classic sequential chains.
 
 ### other stuff:
 - **multi-source /search** - aggregated track search across Deezer, Apple Music, Tidal, Amazon Music, Qobuz, Beatport (when a Zarz session is live) and YouTube Music; candidates carry provider IDs so the download race skips re-searching

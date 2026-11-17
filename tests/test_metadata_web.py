@@ -306,7 +306,12 @@ def test_download_pipeline_writes_extended_tags(monkeypatch, tmp_path):
     )
 
     assert result is not None and result.exists()
-    tags = FLAC(str(result))
-    assert tags["ISRC"] == ["USQX91300108"]
-    assert tags["LABEL"] == ["Columbia"]
-    assert tags["BPM"] == ["116"]
+    # Новый контракт: MP3-запрос всегда нормализуется в .mp3 —
+    # исходник-FLAC конвертируется в честный 320k CBR до тегирования.
+    assert result.suffix == ".mp3"
+    from mutagen.mp3 import MP3
+
+    tags = MP3(str(result))
+    assert tags["TXXX:ISRC"].text[0] == "USQX91300108"
+    assert tags["TXXX:LABEL"].text[0] == "Columbia"
+    assert tags["TBPM"].text[0] == "116"

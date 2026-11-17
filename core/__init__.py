@@ -71,6 +71,41 @@ def _install_legacy_aliases() -> None:
 _install_legacy_aliases()
 
 
+def _normalize_to_mp3(file_path: Path, report) -> Path:
+    """MP3-ветка всегда отдаёт .mp3.
+
+    Победители гонки приходят в оригинальных контейнерах (.m4a AAC, .opus),
+    а Soulseek может отдать FLAC — всё конвертируется в честный MP3 LAME:
+    битрейт по источнику без раздувания (тот же подход, что в soundcloud.py),
+    lossless-источники → 320k CBR. При ошибке ffmpeg оставляем оригинал —
+    лучше рабочий файл в другом контейнере, чем ничего.
+    """
+    from .sources.youtube import (
+        _detect_audio_info,
+        _select_mp3_bitrate,
+        _transcode_to_mp3,
+    )
+
+    codec, abr = _detect_audio_info(file_path)
+    if codec == "flac" or file_path.suffix.lower() == ".flac":
+        bitrate = "320k"
+    else:
+        bitrate = _select_mp3_bitrate(codec, abr)
+    report(
+        f"[*] Конвертация {file_path.suffix.lstrip('.')} "
+        f"({codec or '?'} {abr or '?'}kbps) -> MP3 {bitrate}..."
+    )
+    out_path = file_path.with_suffix(".mp3")
+    if _transcode_to_mp3(file_path, out_path, bitrate=bitrate) and out_path.exists():
+        try:
+            file_path.unlink()
+        except OSError:
+            pass
+        return out_path
+    report("[!] Конвертация в MP3 не удалась — оставляю оригинальный контейнер")
+    return file_path
+
+
 def search_tracks(query: str, limit: int = 8) -> list[dict]:
     """
     Агрегированный поиск треков: Deezer, Apple Music, Tidal, Amazon Music,
@@ -346,6 +381,7 @@ def download_track_by_link(
         # Soulseek, Zarz (Tidal AAC 320 / Amazon Opus 320 / Beatport AAC 256)
         # и прямые ссылки (VK/YouTube/SoundCloud). Побеждает первый, кто отдал
         # ≥ RACE_MIN_BITRATE kbps (lossless — безусловно), иначе лучший из доехавших.
+        # Победитель в оригинальном контейнере затем нормализуется в .mp3 (шаг 4).
         if parallel_mode:
             file_path, race_source = run_lossy_race(
                 artist=artist,
@@ -547,6 +583,12 @@ def download_track_by_link(
 
     # 4. Если скачивание успешно, вшиваем метаданные и обложку
     if file_path and file_path.exists():
+        # Нормализация контейнера: MP3-запрос всегда отдаёт .mp3 —
+        # победители гонки (.m4a/.opus) и случайный FLAC конвертируются
+        # в честный MP3 до тегирования.
+        if target_quality == "MP3" and file_path.suffix.lower() != ".mp3":
+            file_path = _normalize_to_mp3(file_path, report)
+
         if progress_callback:
             progress_callback({
                 "stage": "tagging",

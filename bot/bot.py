@@ -264,6 +264,17 @@ def _prepare_thumbnail_sync(file_path: Path, album_art_url: Optional[str], temp_
                 covr = audio.get("covr")
                 if covr and len(covr) > 0:
                     raw_art = covr[0]
+            elif suffix in [".opus", ".ogg"]:
+                # В Ogg-контейнерах обложка лежит не в .pictures, а в теге
+                # METADATA_BLOCK_PICTURE (base64 от FLAC Picture blob) —
+                # именно так её пишет tagger.apply_metadata.
+                import base64
+                from mutagen.flac import Picture
+                from mutagen.oggopus import OggOpus
+                audio = OggOpus(str(file_path))
+                blocks = audio.get("METADATA_BLOCK_PICTURE") or []
+                if blocks:
+                    raw_art = Picture(base64.b64decode(blocks[0])).data
 
             if raw_art:
                 processed = _process_image_to_telegram_thumbnail(raw_art, temp_dir)

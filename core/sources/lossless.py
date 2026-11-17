@@ -144,7 +144,8 @@ def download_lossy_zarz_track(
     """Lossy-цепочка Zarz (AAC 320 / Opus 320 / AAC 256) для MP3-ветки.
 
     Возвращает (путь к файлу, имя источника) или (None, None). Файл —
-    оригинальный контейнер (.m4a) без пережатия: битрейт не раздуваем.
+    оригинальный контейнер (.m4a/.opus); пайплайн нормализует его в .mp3
+    без раздувания битрейта (см. core._normalize_to_mp3).
     """
     if not getattr(config, "ZARZ_ENABLED", True):
         return None, None

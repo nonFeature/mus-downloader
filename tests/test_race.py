@@ -257,3 +257,67 @@ def test_pipeline_race_loss_falls_back_to_youtube(monkeypatch, tmp_path):
         "", target_quality="MP3", dest_dir=tmp_path, track_meta=meta, reuse_cached_file=False
     )
     assert path is not None and used.get("yt")
+
+
+# ─────────────────── нормализация контейнера в MP3 ───────────────────
+
+
+def _ffmpeg_or_skip():
+    import shutil
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not installed")
+    return ffmpeg
+
+
+def _make_tone(ffmpeg, dst, codec_args):
+    import subprocess
+
+    subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=1", *codec_args, str(dst)],
+        check=True, capture_output=True,
+    )
+
+
+def test_normalize_m4a_to_mp3_no_inflation(tmp_path):
+    import core
+
+    ffmpeg = _ffmpeg_or_skip()
+    m4a = tmp_path / "tone.m4a"
+    _make_tone(ffmpeg, m4a, ["-c:a", "aac", "-b:a", "256k"])
+
+    out = core._normalize_to_mp3(m4a, lambda m: None)
+    assert out.suffix == ".mp3" and out.exists()
+    assert not m4a.exists()  # оригинал удалён после конвертации
+    from mutagen.mp3 import MP3
+
+    bitrate = getattr(MP3(str(out)).info, "bitrate", 0)
+    assert 240_000 <= bitrate <= 270_000  # 256k без раздувания до 320
+
+
+def test_normalize_flac_to_mp3_320(tmp_path):
+    import core
+
+    ffmpeg = _ffmpeg_or_skip()
+    flac = tmp_path / "tone.flac"
+    _make_tone(ffmpeg, flac, ["-c:a", "flac"])
+
+    out = core._normalize_to_mp3(flac, lambda m: None)
+    assert out.suffix == ".mp3" and out.exists()
+    from mutagen.mp3 import MP3
+
+    bitrate = getattr(MP3(str(out)).info, "bitrate", 0)
+    assert 310_000 <= bitrate <= 330_000  # lossless → честный 320 CBR
+
+
+def test_normalize_keeps_original_on_garbage(tmp_path):
+    import core
+
+    _ffmpeg_or_skip()
+    bad = tmp_path / "garbage.m4a"
+    bad.write_bytes(b"\x00" * 64)
+    out = core._normalize_to_mp3(bad, lambda m: None)
+    # ffmpeg не смог — остался оригинал, а не пустота
+    assert out == bad and bad.exists()
