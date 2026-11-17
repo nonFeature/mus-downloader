@@ -511,6 +511,47 @@ def download_track_by_link(
                 else coverart.COVER_SIZE_LOSSY
             ),
         )
+
+        # 4b. Дополнительные «мелочи» из публичных web-API: TIDAL (ISRC, ℗,
+        # номера диска/трека, BPM, тональность, ReplayGain, UPC) и Apple Music
+        # (композиторы, лейбл, жанры). Аккаунт не нужен; сбой источника просто
+        # означает меньше тегов — файл к этому моменту уже готов.
+        if getattr(config, "METADATA_EXTRAS", True):
+            try:
+                from .metadata_web import collect_extras
+
+                if progress_callback:
+                    progress_callback({
+                        "stage": "tagging",
+                        "description": "Доп. метаданные (TIDAL / Apple Music)...",
+                        "percent": 98,
+                    })
+                extras = collect_extras(
+                    artist=artist,
+                    title=title,
+                    album=album or "",
+                    duration=duration,
+                    isrc=isrc or "",
+                )
+                if extras:
+                    tagger.apply_extended_metadata(file_path, extras)
+                    filled = [
+                        name
+                        for key, name in (
+                            ("isrc", "ISRC"),
+                            ("composer", "композитор"),
+                            ("label", "лейбл"),
+                            ("bpm", "BPM"),
+                            ("initial_key", "тональность"),
+                            ("upc", "UPC"),
+                        )
+                        if extras.get(key)
+                    ]
+                    if filled:
+                        report(f"[*] Доп. метаданные: {', '.join(filled)}")
+            except Exception as exc:
+                print(f"[!] Доп. метаданные недоступны: {exc}")
+
         if progress_callback:
             progress_callback({
                 "stage": "done",

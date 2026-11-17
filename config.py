@@ -59,6 +59,25 @@ USER_AGENT = os.getenv("USER_AGENT", "mus-downloader/0.1 ( https://github.com/ )
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "").strip().strip("'\"")
 
 
+# ── Дополнительные метаданные из публичных web-API ────────────────────
+#
+# METADATA_EXTRAS — общий выключатель. TIDAL даёт ISRC, ℗-копирайт, номера
+# диска/трека и их общие, UPC, BPM, тональность, ReplayGain и обложку;
+# Apple Music — композиторов, лейбл и жанры. Оба работают анонимно, без
+# аккаунтов и подписок; запросы идут только на tidal.com и apple.com.
+def _env_flag(name: str, default: str = "true") -> bool:
+    return os.getenv(name, default).strip().strip("'\"").lower() in ("1", "true", "yes", "on")
+
+
+METADATA_EXTRAS: bool = _env_flag("METADATA_EXTRAS")
+TIDAL_METADATA: bool = _env_flag("TIDAL_METADATA")
+APPLE_METADATA: bool = _env_flag("APPLE_METADATA")
+# Регион каталога для обоих API: от него зависит, что вообще отдадут.
+TIDAL_COUNTRY_CODE: str = os.getenv("TIDAL_COUNTRY_CODE", "US").strip() or "US"
+APPLE_STOREFRONT: str = os.getenv("APPLE_STOREFRONT", "US").strip() or "US"
+
+
+
 def build_user_agent(extra: str = "") -> str:
     """
     Собирает идентифицирующий User-Agent в формате, который ждут

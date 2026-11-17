@@ -6,5 +6,7 @@ __pycache__/
 /slskd
 docker-compose.yml
 /.agents
+/Mornye-Python
+/Mornye-Extension
 ORIGINAL_REQUEST.md
 TEST_READY.md

@@ -245,3 +245,163 @@ def apply_metadata(
 
     except Exception as e:
         print(f"[!] Ошибка при записи тегов: {e}")
+
+
+def apply_extended_metadata(file_path: Path, extras: dict) -> bool:
+    """Дописывает «мелочи» из web-API (TIDAL / Apple Music) в готовый файл.
+
+    Базовые поля (исполнитель, название, альбом, год, обложка) пишет
+    :func:`apply_metadata`; здесь только то, чего в обычном источнике нет:
+    ISRC, композитор, лейбл, копирайт, номера диска/трека с общими,
+    полная дата релиза, жанр, BPM, тональность, ReplayGain, UPC.
+
+    Отсутствующие ключи пропускаются, поэтому вызывать можно с любым
+    словарём. Возвращает True, если файл перезаписан.
+    """
+    if not extras or not file_path.exists():
+        return False
+
+    def text(key: str) -> str:
+        value = extras.get(key)
+        if value is None or value == "" or value == []:
+            return ""
+        return str(value).strip()
+
+    def number(key: str) -> str:
+        value = extras.get(key)
+        if value is None or value == "":
+            return ""
+        try:
+            as_float = float(value)
+        except (TypeError, ValueError):
+            return str(value).strip()
+        return str(int(as_float)) if as_float.is_integer() else str(as_float)
+
+    isrc = text("isrc")
+    composer = text("composer")
+    label = text("label")
+    copyright_ = text("copyright")
+    release_date = text("release_date") or text("year")
+    genre = text("genre")
+    bpm = number("bpm")
+    initial_key = text("initial_key")
+    upc = text("upc")
+    disc_number = number("disc_number")
+    disc_total = number("disc_total")
+    track_number = number("track_number")
+    track_total = number("track_total")
+    gain = number("replaygain_track_gain")
+    peak = number("replaygain_track_peak")
+
+    suffix = file_path.suffix.lower()
+    try:
+        if suffix in (".flac", ".opus", ".ogg"):
+            audio = FLAC(str(file_path)) if suffix == ".flac" else OggOpus(str(file_path))
+
+            def put(tag: str, value: str) -> None:
+                if value:
+                    audio[tag] = value
+
+            put("ISRC", isrc)
+            put("COMPOSER", composer)
+            put("LABEL", label)
+            put("ORGANIZATION", label)
+            put("COPYRIGHT", copyright_)
+            put("DATE", release_date)
+            put("GENRE", genre)
+            put("BPM", bpm)
+            put("INITIALKEY", initial_key)
+            put("UPC", upc)
+            put("DISCNUMBER", disc_number)
+            put("DISCTOTAL", disc_total)
+            put("TRACKTOTAL", track_total)
+            put("TOTALTRACKS", track_total)
+            put("REPLAYGAIN_TRACK_GAIN", f"{gain} dB" if gain else "")
+            put("REPLAYGAIN_TRACK_PEAK", peak)
+            audio.save()
+
+        elif suffix == ".mp3":
+            from mutagen.id3 import TALB, TBPM, TCOM, TCOP, TDRC, TKEY, TPOS, TPUB, TRCK, TSRC, TXXX, TCON
+
+            audio = ID3(str(file_path))
+            if isrc:
+                audio.delall("TSRC")
+                audio.add(TSRC(encoding=3, text=[isrc]))
+            if composer:
+                audio.delall("TCOM")
+                audio.add(TCOM(encoding=3, text=[composer]))
+            if label:
+                audio.delall("TPUB")
+                audio.add(TPUB(encoding=3, text=[label]))
+            if copyright_:
+                audio.delall("TCOP")
+                audio.add(TCOP(encoding=3, text=[copyright_]))
+            if release_date:
+                audio.delall("TDRC")
+                audio.add(TDRC(encoding=3, text=[release_date]))
+            if genre:
+                audio.delall("TCON")
+                audio.add(TCON(encoding=3, text=[genre]))
+            if bpm:
+                audio.delall("TBPM")
+                audio.add(TBPM(encoding=3, text=[bpm]))
+            if initial_key:
+                audio.delall("TKEY")
+                audio.add(TKEY(encoding=3, text=[initial_key]))
+            if disc_number:
+                audio.delall("TPOS")
+                audio.add(TPOS(encoding=3, text=[f"{disc_number}/{disc_total}" if disc_total else disc_number]))
+            if track_number and track_total:
+                audio.delall("TRCK")
+                audio.add(TRCK(encoding=3, text=[f"{track_number}/{track_total}"]))
+            for desc, value in (
+                ("ISRC", isrc),
+                ("LABEL", label),
+                ("UPC", upc),
+                ("INITIALKEY", initial_key),
+                ("REPLAYGAIN_TRACK_GAIN", f"{gain} dB" if gain else ""),
+                ("REPLAYGAIN_TRACK_PEAK", peak),
+            ):
+                if not value:
+                    continue
+                audio.delall(f"TXXX:{desc}")
+                audio.add(TXXX(encoding=3, desc=desc, text=[value]))
+            audio.save(v2_version=3)
+
+        elif suffix in (".m4a", ".mp4"):
+            audio = MP4(str(file_path))
+
+            def atom(name: str, value: str) -> None:
+                if value:
+                    audio[name] = [value.encode("utf-8")]
+
+            atom("----:com.apple.iTunes:ISRC", isrc)
+            atom("----:com.apple.iTunes:LABEL", label)
+            atom("----:com.apple.iTunes:UPC", upc)
+            atom("----:com.apple.iTunes:initialkey", initial_key)
+            atom("----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN", f"{gain} dB" if gain else "")
+            atom("----:com.apple.iTunes:REPLAYGAIN_TRACK_PEAK", peak)
+            if composer:
+                audio["\xa9wrt"] = [composer]
+            if copyright_:
+                audio["cprt"] = [copyright_]
+            if release_date:
+                audio["\xa9day"] = [release_date]
+            if genre:
+                audio["\xa9gen"] = [genre]
+            if bpm:
+                try:
+                    audio["tmpo"] = [int(float(bpm))]
+                except (TypeError, ValueError):
+                    pass
+            if disc_number:
+                audio["disk"] = [(int(float(disc_number)), int(float(disc_total or 0)))]
+            if track_number and track_total:
+                audio["trkn"] = [(int(float(track_number)), int(float(track_total)))]
+            audio.save()
+        else:
+            return False
+    except Exception as exc:
+        print(f"[!] Ошибка при записи дополнительных тегов: {exc}")
+        return False
+    return True

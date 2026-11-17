@@ -50,3 +50,7 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# Вендоренные репозитории-референсы живут в корне и гитигнорятся: их тесты
+# не должны попадать в прогон проекта (и не должны падать из-за чужих deps).
+testpaths = ["tests"]
+norecursedirs = [".venv", "Mornye-Python", "Mornye-Extension", "downloads", "scratch", "temp", "slskd"]
