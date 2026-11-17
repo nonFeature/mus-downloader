@@ -35,8 +35,10 @@ def normalize_isrc(isrc: str) -> str:
 
 
 def _artist_score(target_artist: str, cand_artist: str) -> float:
-    target_parts = [p for p in re.split(r"(?i)\s*(?:&|and|feat\.?|ft\.?|,|\+|/)\s*", target_artist or "") if p.strip()]
-    cand_parts = [p for p in re.split(r"(?i)\s*(?:&|and|feat\.?|ft\.?|,|\+|/)\s*", cand_artist or "") if p.strip()]
+    # \b вокруг feat/ft/and обязателен: без него "ft" сматчится внутри "Daft".
+    split_re = r"(?i)\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\band\b)\s*"
+    target_parts = [p for p in re.split(split_re, target_artist or "") if p.strip()]
+    cand_parts = [p for p in re.split(split_re, cand_artist or "") if p.strip()]
     if not target_parts or not cand_parts:
         return 0.0
     target_primary = norm_text(target_parts[0])

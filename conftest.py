@@ -75,6 +75,13 @@ os.environ["FILE_CACHE_ENABLED"] = "0"
 # PARALLEL_SOURCES=1 там же.
 os.environ["PARALLEL_SOURCES"] = "0"
 
+# Zarz-шлюз в тестах выключен: на машине разработчика в .zarz лежат ЖИВЫЕ
+# сессии, и поиск/загрузка через подписанного клиента (async httpx) не
+# перехватываются блокировкой транспорта — тесты ушли бы в реальную сеть
+# или вообще запустили бы браузер с капчей.
+os.environ["ZARZ_ENABLED"] = "0"
+os.environ["ZARZ_DATA_DIR"] = str(_SESSION_DIR / "zarz_empty")
+
 import core  # noqa: E402,F401
 
 

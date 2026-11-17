@@ -53,6 +53,49 @@ def _raw_track_to_cand(raw: dict) -> Optional[dict]:
     }
 
 
+def _map_beatport_items(raw_tracks: list) -> list[dict]:
+    """Сырые tracks из /btp/catalog search → кандидаты для агрегатора поиска."""
+    out = []
+    for raw in raw_tracks:
+        cand = _raw_track_to_cand(raw)
+        if not cand:
+            continue
+        cand["album_art"] = raw.get("cover") or None
+        cand["explicit"] = bool(raw.get("explicit"))
+        out.append(cand)
+    return out
+
+
+def search_beatport(query: str, limit: int = 10) -> list[dict]:
+    """Подписанный поиск Beatport, но ТОЛЬКО при уже живой сессии Zarz.
+
+    Агрегатор поиска не должен открывать браузер с капчей посреди
+    пользовательского запроса — если сессии нет, источник молча пропускается
+    (скачивание при выборе кандидата капчу при необходимости решит).
+    """
+    query = (query or "").strip()
+    if not query or not getattr(config, "ZARZ_ENABLED", True):
+        return []
+    if not zarz.session_ready("beatport"):
+        return []
+    try:
+        payload = zarz.signed_json_sync(
+            "beatport",
+            "POST",
+            "/btp/catalog",
+            json_body={
+                "action": "search",
+                "q": query,
+                "type": "tracks",
+                "limit": max(1, min(limit, 50)),
+                "page": 1,
+            },
+        )
+    except Exception:
+        return []
+    return _map_beatport_items((payload or {}).get("tracks") or [])
+
+
 def search_beatport_track(
     artist: str,
     title: str,

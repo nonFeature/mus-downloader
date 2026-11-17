@@ -358,6 +358,74 @@ def search_spotify_track(
     return best
 
 
+def search_spotify(query: str, limit: int = 10) -> list[dict]:
+    """Список кандидатов из анонимного поиска Spotify (pathfinder searchDesktop).
+
+    Без капчи и аккаунта: client-token + TOTP-подпись, та же сессия, что
+    используется для обогащения метаданных. Spotify не является источником
+    скачивания — кандидаты нужны для агрегатора поиска (spotify_id, ISRC-
+    связка и точные artist/title/album).
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    payload = {
+        "variables": {
+            "searchTerm": query,
+            "offset": 0,
+            "limit": max(1, min(limit, 50)),
+            "numberOfTopResults": 5,
+            "includeAudiobooks": False,
+            "includeArtistHasConcertsField": False,
+            "includePreReleases": True,
+            "includeAuthors": False,
+        },
+        "operationName": "searchDesktop",
+        "extensions": {"persistedQuery": {"version": 1, "sha256Hash": SEARCH_HASH}},
+    }
+    try:
+        response = _request(
+            "POST", PATHFINDER_URL, json=payload, headers={"Content-Type": "application/json"}
+        )
+    except Exception:
+        return []
+    if response.status_code != 200:
+        return []
+
+    out: list[dict] = []
+    for track in _track_items(response.json()):
+        track_id = str(track.get("id") or "")
+        if not track_id:
+            continue
+        artists = [
+            str((entry.get("profile") or {}).get("name") or entry.get("name") or "")
+            for entry in ((track.get("artists") or {}).get("items") or [])
+        ]
+        artists_str = ", ".join(name for name in artists if name)
+        album = track.get("albumOfTrack") or {}
+        cover = None
+        sources = (album.get("coverArt") or {}).get("sources") or []
+        if sources and isinstance(sources[0], dict):
+            cover = sources[0].get("url")
+        year = (album.get("date") or {}).get("year")
+        duration_ms = int((track.get("duration") or {}).get("totalMilliseconds") or 0)
+        out.append({
+            "id": track_id,
+            "title": str(track.get("name") or "").strip(),
+            "artist": artists_str,
+            "duration": (duration_ms / 1000.0) if duration_ms else None,
+            "isrc": "",
+            "album": str(album.get("name") or "") or None,
+            "year": str(year) if year else None,
+            "explicit": (track.get("contentRating") or {}).get("label") == "EXPLICIT",
+            "album_art": cover,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ──────────────────────────── protobuf ────────────────────────────
 
 

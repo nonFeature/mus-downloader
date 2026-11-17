@@ -151,6 +151,7 @@ def test_build_workers_skip_zarz_on_placeholder(monkeypatch):
 
     monkeypatch.setattr(config, "SLSK_USER", "", raising=False)
     monkeypatch.setattr(config, "SLSKD_URL", "", raising=False)
+    monkeypatch.setattr(config, "ZARZ_ENABLED", True, raising=False)
     ctx = {"artist": "Unknown Artist", "title": "Unknown Track", "deezer_id": "123"}
     names = [n for n, _ in race.build_flac_workers(ctx)]
     assert names == ["Deezer"]  # zarz-воркеры исключены
@@ -166,6 +167,7 @@ def test_build_lossy_workers_direct_links(monkeypatch):
 
     monkeypatch.setattr(config, "SLSK_USER", "", raising=False)
     monkeypatch.setattr(config, "SLSKD_URL", "", raising=False)
+    monkeypatch.setattr(config, "ZARZ_ENABLED", True, raising=False)
     ctx = {
         "artist": "Some", "title": "Thing",
         "meta": {"vk_url": "https://vk.com/audio", "direct_url": "https://vk-cdn.net/audio.mp3"},

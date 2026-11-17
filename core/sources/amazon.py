@@ -272,6 +272,11 @@ def _parse_search_results(data: dict) -> list[dict]:
         duration = _parse_duration_mmss(item.get("secondaryText3")) or _parse_duration_mmss(
             item.get("duration")
         )
+        image = item.get("image")
+        image = str(image).strip() if isinstance(image, str) else ""
+        if image:
+            # Убираем размерный суффикс (_SL500_ и т.п.) — CDN отдаст оригинал.
+            image = re.sub(r"\._[^.]+_\.", ".", image)
         candidates.append(
             {
                 "id": info["id"],
@@ -280,9 +285,26 @@ def _parse_search_results(data: dict) -> list[dict]:
                 "duration": duration or None,
                 "isrc": "",
                 "album_id": info.get("albumId") or "",
+                "album_art": image or None,
             }
         )
     return candidates
+
+
+def search_amazon(query: str, limit: int = 10) -> list[dict]:
+    """Поиск через анонимный mesk showSearch (без капчи). Список кандидатов."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        try:
+            data = _show_search(query)
+        except Exception:
+            _reset_session()
+            data = _show_search(query)
+    except Exception:
+        return []
+    return _parse_search_results(data)[: max(1, limit)]
 
 
 def search_amazon_track(

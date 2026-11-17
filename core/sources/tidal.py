@@ -60,6 +60,53 @@ def _raw_track_to_cand(track: dict) -> Optional[dict]:
     }
 
 
+def _tidal_cover_url(cover_id: str, size: str = "1280x1280") -> Optional[str]:
+    """UUID обложки Tidal → URL на resources.tidal.com (дефисы → слеши)."""
+    cover_id = (cover_id or "").strip()
+    if not cover_id:
+        return None
+    return f"https://resources.tidal.com/images/{cover_id.replace('-', '/')}/{size}.jpg"
+
+
+def _map_tidal_items(items: list) -> list[dict]:
+    """Сырые items из /v1/search/tracks → кандидаты для агрегатора поиска."""
+    out = []
+    for t in items:
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        artists = [a.get("name", "") for a in (t.get("artists") or []) if isinstance(a, dict)]
+        if not artists and isinstance(t.get("artist"), dict):
+            artists = [t["artist"].get("name", "")]
+        album = t.get("album") or {}
+        out.append({
+            "id": str(t["id"]),
+            "title": (t.get("title") or "").strip(),
+            "artist": ", ".join(a for a in artists if a),
+            "duration": float(t.get("duration") or 0) or None,
+            "isrc": t.get("isrc") or "",
+            "album": album.get("title") or None,
+            "year": (album.get("releaseDate") or "")[:4] or None,
+            "explicit": bool(t.get("explicit")),
+            "album_art": _tidal_cover_url(album.get("cover") or ""),
+        })
+    return out
+
+
+def search_tidal(query: str, limit: int = 10) -> list[dict]:
+    """Публичный поиск по tidal.com/v1 (без капчи). Список кандидатов."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    r = httpx.get(
+        _build_url("search/tracks", {"query": query, "limit": max(1, min(limit, 50)), "offset": 0}),
+        headers=_headers(),
+        timeout=httpx.Timeout(8.0, connect=5.0),
+    )
+    if r.status_code != 200:
+        return []
+    return _map_tidal_items((r.json() or {}).get("items") or [])
+
+
 def search_tidal_track(
     artist: str,
     title: str,

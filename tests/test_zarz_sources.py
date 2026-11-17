@@ -5,6 +5,8 @@
 """
 import base64
 import json
+import threading
+from pathlib import Path
 
 import pytest
 
@@ -337,6 +339,103 @@ def test_client_cache_and_app_versions(tmp_path, monkeypatch):
         assert (tmp_path / "signed_sessions").exists()
     finally:
         zarz_pkg._clients.clear()
+
+
+# ─────────────────────────── агрегатор поиска ───────────────────────────
+
+
+def test_tidal_map_items():
+    items = [{
+        "id": 103805726,
+        "title": "Stronger",
+        "artists": [{"name": "Kanye West"}],
+        "duration": 311.9,
+        "isrc": "USUM70741299",
+        "explicit": True,
+        "album": {"title": "Graduation", "releaseDate": "2007-09-11", "cover": "aa-bb-cc"},
+    }]
+    out = tidal._map_tidal_items(items)
+    assert out[0]["id"] == "103805726"
+    assert out[0]["artist"] == "Kanye West"
+    assert out[0]["year"] == "2007"
+    assert out[0]["explicit"] is True
+    assert out[0]["album_art"] == "https://resources.tidal.com/images/aa/bb/cc/1280x1280.jpg"
+
+
+def test_qobuz_map_items():
+    from core.sources import qobuz
+
+    items = [{
+        "id": 58852382,
+        "title": "Stronger",
+        "performer": {"name": "Kanye West"},
+        "duration": 311,
+        "isrc": "USUM70741299",
+        "parental_warning": True,
+        "maximum_bit_depth": 24,
+        "album": {
+            "title": "Graduation",
+            "release_date_original": "2007-09-11",
+            "image": {"large": "https://static.qobuz.com/large.jpg", "thumbnail": "t.jpg"},
+        },
+    }]
+    out = qobuz._map_qobuz_items(items)
+    assert out[0]["id"] == "58852382"
+    assert out[0]["artist"] == "Kanye West"
+    assert out[0]["year"] == "2007"
+    assert out[0]["explicit"] is True
+    assert out[0]["hires"] is True
+    assert out[0]["album_art"] == "https://static.qobuz.com/large.jpg"
+
+
+def test_beatport_search_requires_live_session(monkeypatch):
+    from core.sources import beatport as bp
+    import config
+
+    monkeypatch.setattr(config, "ZARZ_ENABLED", True, raising=False)
+    monkeypatch.setattr(bp.zarz, "session_ready", lambda provider: False)
+    assert bp.search_beatport("anything", 5) == []
+
+    calls = []
+    monkeypatch.setattr(bp.zarz, "session_ready", lambda provider: True)
+    monkeypatch.setattr(
+        bp.zarz, "signed_json_sync",
+        lambda *a, **k: calls.append(a) or {"tracks": [
+            {"id": "1", "title": "Song", "mix_name": "Original Mix",
+             "artists": [{"name": "Artist"}], "duration_ms": 300000,
+             "available": True, "cover": "c.jpg", "explicit": False},
+        ]},
+    )
+    out = bp.search_beatport("song artist", 5)
+    assert calls and out[0]["id"] == "1"
+    assert out[0]["title"] == "Song (Original Mix)"
+    assert out[0]["album_art"] == "c.jpg"
+
+
+def test_zarz_worker_uses_meta_id_without_search(tmp_path):
+    from core.sources import race
+
+    searched, downloaded = [], []
+
+    def fake_search(*a, **k):
+        searched.append(a)
+        return {"id": "WRONG"}
+
+    def fake_download(track_id, work_dir, **k):
+        downloaded.append(track_id)
+        p = Path(work_dir) / "f.flac"
+        p.write_bytes(b"fLaC")
+        return p
+
+    ctx = {
+        "artist": "A", "title": "B", "duration": None, "isrc": None, "album": None,
+        "meta": {"tidal_id": "12345"},
+    }
+    name, worker = race._mk_zarz_worker("Tidal", fake_search, fake_download, ctx, id_key="tidal_id")
+    out = worker(tmp_path, threading.Event())
+    assert out is not None
+    assert not searched          # поиск не вызывался — есть готовый ID
+    assert downloaded == ["12345"]
 
 
 # ─────────────────────────── lossy-цепочка ───────────────────────────

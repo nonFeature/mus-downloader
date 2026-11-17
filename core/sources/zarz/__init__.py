@@ -282,6 +282,18 @@ async def _signed_json_auth(
     return await _signed_json(client, method, path, json_body=json_body, extra_headers=extra_headers)
 
 
+def session_ready(provider: str) -> bool:
+    """True, если на диске уже есть живая сессия провайдера.
+
+    Не делает сети и не запускает капчу — используется поиском, чтобы
+    не открывать браузер посреди пользовательского запроса.
+    """
+    try:
+        return get_client(provider).authenticated
+    except Exception:
+        return False
+
+
 def signed_json_sync(
     provider: str,
     method: str,

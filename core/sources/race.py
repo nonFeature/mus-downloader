@@ -248,16 +248,21 @@ def _is_placeholder_meta(artist: str, title: str) -> bool:
     return a.startswith("unknown") and t.startswith("unknown")
 
 
-def _mk_zarz_worker(label, search_fn, download_fn, ctx, **dl_kwargs):
+def _mk_zarz_worker(label, search_fn, download_fn, ctx, id_key: Optional[str] = None, **dl_kwargs):
     def worker(work_dir: Path, ev: threading.Event) -> Optional[Path]:
-        cand = search_fn(
-            ctx["artist"], ctx["title"],
-            duration=ctx.get("duration"), isrc=ctx.get("isrc"), album=ctx.get("album"),
-        )
-        if not cand or ev.is_set():
+        # Если кандидат пришёл из поиска с готовым provider-ID — качаем
+        # напрямую, без повторного поиска.
+        track_id = (ctx.get("meta") or {}).get(id_key) if id_key else None
+        if not track_id:
+            cand = search_fn(
+                ctx["artist"], ctx["title"],
+                duration=ctx.get("duration"), isrc=ctx.get("isrc"), album=ctx.get("album"),
+            )
+            track_id = cand["id"] if cand else None
+        if not track_id or ev.is_set():
             return None
         return download_fn(
-            cand["id"], work_dir,
+            track_id, work_dir,
             artist=ctx["artist"], title=ctx["title"],
             progress_callback=None, cancel_event=ev, **dl_kwargs,
         )
@@ -311,13 +316,13 @@ def build_flac_workers(ctx: dict) -> list:
         from .tidal import download_tidal_track, search_tidal_track
 
         if getattr(config, "ZARZ_TIDAL", True):
-            workers.append(_mk_zarz_worker("Tidal", search_tidal_track, download_tidal_track, ctx))
+            workers.append(_mk_zarz_worker("Tidal", search_tidal_track, download_tidal_track, ctx, id_key="tidal_id"))
         if getattr(config, "ZARZ_AMAZON", True):
-            workers.append(_mk_zarz_worker("Amazon Music", search_amazon_track, download_amazon_track, ctx, codec="flac"))
+            workers.append(_mk_zarz_worker("Amazon Music", search_amazon_track, download_amazon_track, ctx, id_key="amazon_asin", codec="flac"))
         if getattr(config, "ZARZ_QOBUZ", True):
-            workers.append(_mk_zarz_worker("Qobuz", search_qobuz_track, download_qobuz_track, ctx))
+            workers.append(_mk_zarz_worker("Qobuz", search_qobuz_track, download_qobuz_track, ctx, id_key="qobuz_id"))
         if getattr(config, "ZARZ_BEATPORT", True):
-            workers.append(_mk_zarz_worker("Beatport", search_beatport_track, download_beatport_track, ctx))
+            workers.append(_mk_zarz_worker("Beatport", search_beatport_track, download_beatport_track, ctx, id_key="beatport_id"))
     return workers
 
 
@@ -336,11 +341,11 @@ def build_lossy_workers(ctx: dict) -> list:
         from .tidal import download_tidal_track, search_tidal_track
 
         if getattr(config, "ZARZ_TIDAL", True):
-            workers.append(_mk_zarz_worker("Tidal", search_tidal_track, download_tidal_track, ctx, quality="HIGH"))
+            workers.append(_mk_zarz_worker("Tidal", search_tidal_track, download_tidal_track, ctx, id_key="tidal_id", quality="HIGH"))
         if getattr(config, "ZARZ_AMAZON", True):
-            workers.append(_mk_zarz_worker("Amazon Music", search_amazon_track, download_amazon_track, ctx, codec="opus"))
+            workers.append(_mk_zarz_worker("Amazon Music", search_amazon_track, download_amazon_track, ctx, id_key="amazon_asin", codec="opus"))
         if getattr(config, "ZARZ_BEATPORT", True):
-            workers.append(_mk_zarz_worker("Beatport", search_beatport_track, download_beatport_track, ctx, quality="high"))
+            workers.append(_mk_zarz_worker("Beatport", search_beatport_track, download_beatport_track, ctx, id_key="beatport_id", quality="high"))
 
     # Прямые ссылки — тоже участники гонки (если они вообще есть).
     direct_audio_url = ctx.get("direct_audio_url") or ""
@@ -410,11 +415,13 @@ def run_flac_race(
     isrc: Optional[str] = None,
     album: Optional[str] = None,
     deezer_id: Optional[str] = None,
+    meta: Optional[dict] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> tuple[Optional[Path], Optional[str]]:
     ctx = {
         "artist": artist, "title": title, "duration": duration,
         "isrc": isrc, "album": album, "deezer_id": deezer_id,
+        "meta": meta or {},
     }
     workers = build_flac_workers(ctx)
     if not workers:

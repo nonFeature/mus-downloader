@@ -308,7 +308,8 @@ def search_deezer_track(
         d = unicodedata.normalize("NFD", s)
         return "".join(c for c in d if unicodedata.category(c) != "Mn")
 
-    collab_parts = [p.strip() for p in re.split(r"(?i)\s*(?:&|and|feat\.?|ft\.?|,|\+|/)\s*", artist) if p.strip()]
+    # \b вокруг feat/ft/and обязателен: без него "ft" сматчится внутри "Daft".
+    collab_parts = [p.strip() for p in re.split(r"(?i)\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", artist) if p.strip()]
     primary_artist = collab_parts[0] if collab_parts else artist
 
     clean_title_no_feat = re.sub(r"(?i)\s*[\(\[]?\s*f(?:ea)?t\.?[^\)\]]*[\)\]]?", "", title).strip()

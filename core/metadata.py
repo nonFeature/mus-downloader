@@ -2084,10 +2084,69 @@ def resolve_query_metadata(query: str) -> Optional[dict]:
     return sanitize_metadata_strings(meta)
 
 
+def _apply_junk_penalty(candidates: list[dict], query: str) -> None:
+    """Штрафует мусорных кандидатов в агрегаторе поиска (in-place).
+
+    - Караоке/трибьюты/каверы/инструменталки (паттерны is_junk_track) — ×0.2.
+    - «Various Artists» и прочие сборные артисты — ×0.4, если пользователь
+      сам не ищет various.
+    - Кавер от постороннего артиста с именем оригинала в скобках
+      («Get Lucky (Daft Punk)») — ×0.3.
+    - Артист-имитатор, строго содержащий имя оригинала плюс довесок
+      («Daft Punk Experience»), когда ни одна часть артиста не совпадает
+      с именем точно — ×0.3. Легальные коллабы («Daft Punk, Pharrell
+      Williams») не страдают: одна из частей совпадает точно.
+    Оригинальные релизы при прочих равных поднимаются выше.
+    """
+    from .sources.deezer import is_junk_track
+    from .sources.matching import toks
+
+    q_low = (query or "").lower()
+    q_toks = toks(q_low)
+    va_names = {"various artists", "various", "va", "разные исполнители", "multi-interprètes"}
+    for c in candidates:
+        artist = (c.get("artist") or "").strip()
+        title = (c.get("title") or "").strip()
+        score = c.get("score", 0.0)
+        if is_junk_track(title, artist, query):
+            c["score"] = score * 0.2
+            continue
+        if artist.lower() in va_names and "various" not in q_low:
+            c["score"] = score * 0.4
+            continue
+
+        # Имя артиста из запроса ≈ токены запроса минус токены названия.
+        a_toks = toks(artist)
+        if not (a_toks & q_toks):
+            # Артист вообще не из запроса: кавер, если в скобках названия
+            # стоит имя оригинала.
+            for paren in re.findall(r"\(([^)]+)\)", title):
+                p_toks = toks(paren)
+                if p_toks and p_toks <= q_toks:
+                    c["score"] = score * 0.3
+                    break
+            continue
+        est_artist = q_toks - toks(title)
+        if not est_artist:
+            continue
+        # Артист пересекается с запросом: проверяем на имитатора.
+        # \b вокруг feat/ft обязателен: без него "ft" сматчится внутри "Daft".
+        parts = [p for p in re.split(r"(?i)\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", artist) if p.strip()]
+        has_exact = any(toks(p) == est_artist for p in parts)
+        has_imitation = any(toks(p) > est_artist for p in parts)
+        if not has_exact and has_imitation:
+            c["score"] = score * 0.3
+
+
 def search_multisource_tracks(query: str, limit: int = 8) -> list[dict]:
     """
-    Агрегированный поиск треков по нескольким источникам (Deezer, iTunes, YouTube Music).
-    Возвращает список структурированных кандидатов с рейтингом релевантности.
+    Агрегированный поиск треков по нескольким источникам: Deezer, iTunes,
+    Tidal, Amazon Music, Qobuz, Spotify, Beatport (только при живой
+    Zarz-сессии) и YouTube Music. Возвращает список структурированных
+    кандидатов с рейтингом релевантности (караоке/трибьюты/«Various Artists»
+    штрафуются) и provider-ID (tidal_id, amazon_asin, qobuz_id, spotify_id,
+    beatport_id) — гонка источников использует их для скачивания без
+    повторного поиска.
     """
     query = (query or "").strip()
     if not query:
@@ -2171,7 +2230,114 @@ def search_multisource_tracks(query: str, limit: int = 8) -> list[dict]:
     except Exception as e:
         print(f"[!] iTunes search error: {e}")
 
-    # 3. YouTube Music поиск (для треков, отсутствующих в Deezer/iTunes)
+    # Общий мердж для новых источников: точное совпадение artist::title
+    # обогащает уже существующего кандидата provider-ID (при скачивании
+    # гонка использует его напрямую, без повторного поиска), иначе
+    # добавляется новый кандидат.
+    def _merge_or_add(items, source_name, quality_label, id_field, url_fn, score_factor=1.0):
+        for c in items or []:
+            t_name = (c.get("title") or "").strip()
+            a_name = (c.get("artist") or "").strip()
+            if not t_name or not a_name:
+                continue
+            key = f"{a_name.lower()}::{t_name.lower()}"
+            existing = next(
+                (x for x in candidates if f"{x['artist'].lower()}::{x['title'].lower()}" == key),
+                None,
+            )
+            if existing is not None:
+                if not existing.get(id_field):
+                    existing[id_field] = c["id"]
+                if not existing.get("isrc") and c.get("isrc"):
+                    existing["isrc"] = c["isrc"]
+                continue
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            dur = c.get("duration")
+            candidates.append({
+                "title": t_name,
+                "artist": a_name,
+                "album": c.get("album"),
+                "year": c.get("year"),
+                "duration": int(dur) if dur else None,
+                "deezer_id": None,
+                id_field: c["id"],
+                "isrc": c.get("isrc") or None,
+                "album_art": c.get("album_art"),
+                "source": source_name,
+                "source_quality": quality_label,
+                "explicit": bool(c.get("explicit")),
+                "url": url_fn(c["id"]),
+                "score": score_text_candidate(t_name, a_name, query) * score_factor,
+            })
+
+    # 3. Tidal — публичный web-API (без капчи): HiRes FLAC / AAC 320
+    try:
+        from .sources.tidal import search_tidal
+
+        _merge_or_add(
+            search_tidal(query, limit * 2),
+            "Tidal", "Tidal (HiRes FLAC / 320)", "tidal_id",
+            lambda i: f"https://tidal.com/browse/track/{i}",
+        )
+    except Exception as e:
+        print(f"[!] Tidal search error: {e}")
+
+    # 4. Amazon Music — анонимный mesk-API (без капчи): FLAC / Opus 320
+    try:
+        from .sources.amazon import search_amazon
+
+        _merge_or_add(
+            search_amazon(query, limit * 2),
+            "Amazon Music", "Amazon Music (FLAC / Opus 320)", "amazon_asin",
+            lambda i: f"https://music.amazon.com/tracks/{i}",
+        )
+    except Exception as e:
+        print(f"[!] Amazon search error: {e}")
+
+    # 5. Qobuz — публичный widget-API (без капчи): HiRes FLAC
+    try:
+        from .sources.qobuz import search_qobuz_public
+
+        _merge_or_add(
+            search_qobuz_public(query, limit * 2),
+            "Qobuz", "Qobuz (HiRes FLAC)", "qobuz_id",
+            lambda i: f"https://open.qobuz.com/track/{i}",
+        )
+    except Exception as e:
+        print(f"[!] Qobuz search error: {e}")
+
+    # 6. Spotify — анонимная сессия web-плеера (без капчи). Не источник
+    # скачивания: кандидаты дают spotify_id, точные artist/title/album и
+    # год; качать выбранный трек гонка будет с остальных площадок.
+    if getattr(config, "SPOTIFY_METADATA", True):
+        try:
+            from .metadata_spotify import search_spotify
+
+            _merge_or_add(
+                search_spotify(query, limit * 2),
+                "Spotify", "Spotify (metadata)", "spotify_id",
+                lambda i: f"https://open.spotify.com/track/{i}",
+            )
+        except Exception as e:
+            print(f"[!] Spotify search error: {e}")
+
+    # 7. Beatport — только если сессия Zarz уже жива (капча при поиске
+    # недопустима: она открывает браузер посреди пользовательского запроса)
+    try:
+        from .sources.beatport import search_beatport
+
+        _merge_or_add(
+            search_beatport(query, limit),
+            "Beatport", "Beatport (FLAC / AAC)", "beatport_id",
+            lambda i: f"https://www.beatport.com/track/-/{i}",
+            score_factor=0.98,
+        )
+    except Exception as e:
+        print(f"[!] Beatport search error: {e}")
+
+    # 8. YouTube Music поиск (для треков, отсутствующих в официальных источниках)
     if len(candidates) < limit:
         try:
             from ytmusicapi import YTMusic
@@ -2208,6 +2374,13 @@ def search_multisource_tracks(query: str, limit: int = 8) -> list[dict]:
                 candidates.append(cand)
         except Exception:
             pass
+
+    # Мусорный штраф: караоке/трибьюты/каверы и «Various Artists» вниз,
+    # чтобы оригинальные релизы были выше в выдаче.
+    try:
+        _apply_junk_penalty(candidates, query)
+    except Exception as e:
+        print(f"[!] Junk filter error: {e}")
 
     # Сортируем по оценке совпадения
     candidates.sort(key=lambda c: c.get("score", 0.0), reverse=True)

@@ -25,6 +25,7 @@ started out as a **cli tool** that was supposed to be the core for other project
 With `PARALLEL_SOURCES=true` (default) sources of each branch **race in parallel** instead of running sequentially (`core/sources/race.py`): FLAC — the fattest actual file wins by bit depth/sample rate (24bit/192kHz short-circuits the rest), MP3 — first to deliver ≥ `RACE_MIN_BITRATE` (default 320 kbps; lossless wins unconditionally), otherwise the best bitrate of the finishers. Losers are cancelled cooperatively and deleted; `RACE_TIMEOUT` caps the whole race. Set `PARALLEL_SOURCES=false` for the classic sequential chains.
 
 ### other stuff:
+- **multi-source /search** - aggregated track search across Deezer, Apple Music, Tidal, Amazon Music, Qobuz, Beatport (when a Zarz session is live) and YouTube Music; candidates carry provider IDs so the download race skips re-searching
 - **mutagen** - writes ID3v2.4 (MP3) and Vorbis comments (FLAC), embeds artwork, year, track number, and explicit tags
 - **ffmpeg** - transcodes FLAC to honest 320 kbps CBR MP3 when you ask for MP3 but Soulseek only has FLAC
 

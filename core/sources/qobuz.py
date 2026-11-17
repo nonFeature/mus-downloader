@@ -18,6 +18,64 @@ from .matching import pick_best
 
 OPEN_TRACK_URL = "https://open.qobuz.com/track/"
 
+# Публичный widget-API Qobuz: поиск без подписанной сессии и без капчи
+# (тот же fallback, что использует официальный экстеншен qobuz-web).
+QOBUZ_PUBLIC_BASE = "https://www.qobuz.com/api.json/0.2"
+QOBUZ_WIDGET_APP_ID = "735532640"
+
+
+def _map_qobuz_items(items: list) -> list[dict]:
+    """Сырые items Qobuz track/search → кандидаты для агрегатора поиска."""
+    out = []
+    for t in items:
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        performer = t.get("performer") or {}
+        album = t.get("album") or {}
+        image = album.get("image") or {}
+        artist = performer.get("name") or (album.get("artist") or {}).get("name") or ""
+        duration = t.get("duration")
+        try:
+            duration = float(duration) if duration else None
+        except (TypeError, ValueError):
+            duration = None
+        year_raw = album.get("release_date_original") or album.get("release_date_download") or album.get("release_date_stream") or ""
+        out.append({
+            "id": str(t["id"]),
+            "title": (t.get("title") or "").strip(),
+            "artist": artist,
+            "duration": duration,
+            "isrc": t.get("isrc") or "",
+            "album": album.get("title") or None,
+            "year": str(year_raw)[:4] or None,
+            "explicit": bool(t.get("parental_warning")),
+            "album_art": image.get("large") or image.get("thumbnail") or None,
+            "hires": bool(t.get("hires")) or int(t.get("maximum_bit_depth") or 0) > 16,
+        })
+    return out
+
+
+def search_qobuz_public(query: str, limit: int = 10) -> list[dict]:
+    """Поиск Qobuz через публичный widget-API (без капчи/сессии)."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    import httpx
+
+    r = httpx.get(
+        f"{QOBUZ_PUBLIC_BASE}/track/search",
+        params={"query": query, "limit": max(1, min(limit, 50)), "offset": 0},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": config.BROWSER_USER_AGENT,
+            "X-App-Id": QOBUZ_WIDGET_APP_ID,
+        },
+        timeout=httpx.Timeout(8.0, connect=5.0),
+    )
+    if r.status_code != 200:
+        return []
+    return _map_qobuz_items(_collection_items(r.json() or {}, "tracks"))
+
 
 def _collection_items(payload: dict, key: str) -> list:
     """Достаёт список элементов из ответа zarz/qobuz (несколько форм формы)."""

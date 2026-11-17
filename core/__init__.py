@@ -73,7 +73,8 @@ _install_legacy_aliases()
 
 def search_tracks(query: str, limit: int = 8) -> list[dict]:
     """
-    Агрегированный поиск треков по Deezer, Apple Music и YouTube Music.
+    Агрегированный поиск треков: Deezer, Apple Music, Tidal, Amazon Music,
+    Qobuz, Beatport (при живой Zarz-сессии) и YouTube Music.
     """
     return metadata.search_multisource_tracks(query, limit=limit)
 
@@ -267,6 +268,7 @@ def download_track_by_link(
                 isrc=isrc,
                 album=album,
                 deezer_id=deezer_id,
+                meta=meta,
                 status_callback=report,
             )
             if file_path:
