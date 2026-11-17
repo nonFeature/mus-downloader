@@ -94,6 +94,7 @@ def download_deezer_track(
     artist: str = "",
     title: str = "",
     progress_callback: Optional[Callable[[dict], None]] = None,
+    cancel_event=None,
 ) -> Optional[Path]:
     """
     Скачивает трек из Deezer по ID.
@@ -200,6 +201,15 @@ def download_deezer_track(
                     yield chunk
 
             stream_iter = _tracked_iter(r.iter_bytes(chunk_size=4096), total_bytes) if progress_callback else r.iter_bytes(chunk_size=4096)
+
+            if cancel_event is not None:
+                def _cancellable(iterable):
+                    for chunk in iterable:
+                        if cancel_event.is_set():
+                            raise RuntimeError("скачивание отменено (гонка)")
+                        yield chunk
+                stream_iter = _cancellable(stream_iter)
+
             decrypt_and_save(stream_iter, bf_key, output_path)
             
         print(f"[+] Deezer: скачан {output_path.name}")

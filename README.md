@@ -17,9 +17,12 @@ started out as a **cli tool** that was supposed to be the core for other project
 ### for downloading:
 1. **Soulseek** - embedded directly in the app via `aioslsk`
 2. **Deezer** - direct stream downloads
-3. **SoundCloud** - grabs original stream via `yt-dlp`
-4. **YouTube Music / YouTube** - fallback matcher using `ytmusicapi` (checks title and duration), then `yt-dlp`
-5. **slskd** - optional fallback to an external slskd daemon if you already have one running
+3. **Tidal / Amazon Music / Qobuz / Beatport** - via the Zarz gateway (`api.zarz.moe`, from the Mornye ecosystem): first run solves Cloudflare Turnstile in a real Chrome (needs `pydoll` + Chrome installed), later the session persists on disk and requests are HMAC-signed. FLAC branch: Tidal/Qobuz/Amazon/Beatport lossless (Tidal DASH streams are reassembled and remuxed to FLAC). MP3 branch (after Soulseek): Tidal HIGH AAC 320 → Amazon Opus 320 → Beatport AAC 256, original containers without re-encoding
+4. **SoundCloud** - grabs original stream via `yt-dlp`
+5. **YouTube Music / YouTube** - fallback matcher using `ytmusicapi` (checks title and duration), then `yt-dlp`
+6. **slskd** - optional fallback to an external slskd daemon if you already have one running
+
+With `PARALLEL_SOURCES=true` (default) sources of each branch **race in parallel** instead of running sequentially (`core/sources/race.py`): FLAC — the fattest actual file wins by bit depth/sample rate (24bit/192kHz short-circuits the rest), MP3 — first to deliver ≥ `RACE_MIN_BITRATE` (default 320 kbps; lossless wins unconditionally), otherwise the best bitrate of the finishers. Losers are cancelled cooperatively and deleted; `RACE_TIMEOUT` caps the whole race. Set `PARALLEL_SOURCES=false` for the classic sequential chains.
 
 ### other stuff:
 - **mutagen** - writes ID3v2.4 (MP3) and Vorbis comments (FLAC), embeds artwork, year, track number, and explicit tags

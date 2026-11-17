@@ -23,6 +23,10 @@ from .sources import (
     download_youtube_track,
     download_fallback_track,
     download_soundcloud_track,
+    download_lossless_zarz_track,
+    download_lossy_zarz_track,
+    run_flac_race,
+    run_lossy_race,
     deezer,
     soulseek,
     soundcloud,
@@ -30,6 +34,11 @@ from .sources import (
     youtube_matcher,
     fallback,
     doh_resolver,
+    tidal,
+    qobuz,
+    amazon,
+    beatport,
+    lossless,
 )
 
 
@@ -50,6 +59,11 @@ def _install_legacy_aliases() -> None:
         "sources.youtube_matcher": youtube_matcher,
         "sources.fallback": fallback,
         "sources.doh_resolver": doh_resolver,
+        "sources.tidal": tidal,
+        "sources.qobuz": qobuz,
+        "sources.amazon": amazon,
+        "sources.beatport": beatport,
+        "sources.lossless": lossless,
     }.items():
         sys.modules.setdefault(name, module)
 
@@ -75,9 +89,19 @@ def download_track_by_link(
 ) -> Optional[Path]:
     """
     Основная логика скачивания трека:
-    - Для FLAC: честный поиск Lossless (Soulseek -> Deezer).
-    - Для MP3: Deezer (320kbps CBR) -> Soulseek (slsk, если настроен) -> YouTube Music (CSVMusic matcher ~250-280k VBR) -> yt-dlp fallback.
-    - При наличии прямых ссылок (SoundCloud, YouTube, VK) скачивает напрямую из указанного источника.
+    - PARALLEL_SOURCES=true (по умолчанию): источники каждой ветки стартуют
+      ОДНОВРЕМЕННО (гонка в ``sources/race.py``). FLAC: побеждает самый
+      жирный по битности/семплрейту. MP3: первый, кто отдал ≥ RACE_MIN_BITRATE
+      kbps (lossless — безусловно), иначе лучший из доехавших; хвост —
+      YouTube Music и yt-dlp фолбек, если гонка не дала ничего.
+    - PARALLEL_SOURCES=false: последовательные цепочки.
+      FLAC: Soulseek -> Deezer -> Zarz (Tidal -> Amazon -> Qobuz -> Beatport).
+      MP3: Deezer 320 -> Soulseek -> Zarz lossy (Tidal AAC 320 -> Amazon
+      Opus 320 -> Beatport AAC 256) -> прямые ссылки (VK/YouTube/SoundCloud)
+      -> YouTube Music -> yt-dlp fallback.
+    - Прямые ссылки (SoundCloud, YouTube, VK) участвуют в гонке наравне с
+      остальными; в последовательном режиме качаются из указанного источника,
+      если официальные площадки не нашли трек.
     - ``reuse_cached_file`` — переиспользовать ранее скачанный файл из
       локального кэша вместо повторной загрузки. Бот его выключает: он всё
       равно удаляет файл сразу после отправки.
@@ -229,9 +253,27 @@ def download_track_by_link(
                 cache.set_deezer_id(artist, title, album or "", deezer_id)
 
     # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
+    parallel_mode = getattr(config, "PARALLEL_SOURCES", True)
     if target_quality == "FLAC":
+        # Шаг FLAC-0 (PARALLEL_SOURCES): гонка всех lossless-источников —
+        # Soulseek, Deezer, Tidal, Amazon, Qobuz, Beatport стартуют вместе,
+        # побеждает самый жирный по битности/семплрейту.
+        if parallel_mode:
+            file_path, race_source = run_flac_race(
+                artist=artist,
+                title=title,
+                dest_dir=target_dir,
+                duration=duration,
+                isrc=isrc,
+                album=album,
+                deezer_id=deezer_id,
+                status_callback=report,
+            )
+            if file_path:
+                source_used = race_source
+
         # Шаг FLAC-1: Soulseek (только FLAC, в первую очередь)
-        if not file_path and (config.SLSK_USER or config.SLSKD_URL):
+        if not file_path and not parallel_mode and (config.SLSK_USER or config.SLSKD_URL):
             report("[*] Soulseek: поиск FLAC...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="FLAC", duration=duration)
             for idx, cand in enumerate(candidates, 1):
@@ -260,7 +302,7 @@ def download_track_by_link(
                 report(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
         # Шаг FLAC-2: Deezer (только если реально отдается FLAC)
-        if not file_path and deezer_id:
+        if not file_path and not parallel_mode and deezer_id:
             report("[*] Deezer: скачивание FLAC...")
             file_path = download_deezer_track(
                 deezer_id,
@@ -273,6 +315,23 @@ def download_track_by_link(
             if file_path and file_path.suffix.lower() == ".flac":
                 source_used = "Deezer FLAC"
 
+        # Шаг FLAC-3: Zarz-шлюз — lossless из пула стриминговых аккаунтов
+        # (Tidal → Amazon Music → Qobuz → Beatport). Первая авторизация
+        # решает капчу в браузере; дальше сессия переиспользуется с диска.
+        if not file_path and not parallel_mode and getattr(config, "ZARZ_ENABLED", True):
+            file_path, zarz_source = download_lossless_zarz_track(
+                artist=artist,
+                title=title,
+                dest_dir=target_dir,
+                duration=duration,
+                isrc=isrc,
+                album=album,
+                status_callback=report,
+                progress_callback=progress_callback,
+            )
+            if file_path:
+                source_used = zarz_source
+
         # SoundCloud в FLAC-ветке не проверяется: он отдаёт AAC/Opus
         # ~128-160k, расширения .flac/.wav там не бывает, так что проверка
         # всегда давала бы False, потратив полное скачивание файла.
@@ -281,8 +340,31 @@ def download_track_by_link(
 
     # 3. Логика для MP3 / стандартных стримингов (основной режим или откат с FLAC)
     if not file_path:
+        # Шаг MP3-0 (PARALLEL_SOURCES): гонка lossy-источников — Deezer 320,
+        # Soulseek, Zarz (Tidal AAC 320 / Amazon Opus 320 / Beatport AAC 256)
+        # и прямые ссылки (VK/YouTube/SoundCloud). Побеждает первый, кто отдал
+        # ≥ RACE_MIN_BITRATE kbps (lossless — безусловно), иначе лучший из доехавших.
+        if parallel_mode:
+            file_path, race_source = run_lossy_race(
+                artist=artist,
+                title=title,
+                dest_dir=target_dir,
+                duration=duration,
+                isrc=isrc,
+                album=album,
+                explicit=explicit,
+                deezer_id=deezer_id,
+                meta=meta,
+                url_or_query=url_or_query,
+                is_youtube=is_youtube,
+                is_soundcloud=is_soundcloud,
+                status_callback=report,
+            )
+            if file_path:
+                source_used = race_source
+
         # Шаг MP3-1: Deezer MP3 320 (честный студийный 320k CBR)
-        if not file_path and deezer_id:
+        if not file_path and not parallel_mode and deezer_id:
             report("[*] Deezer: скачивание MP3 320...")
             file_path = download_deezer_track(
                 deezer_id,
@@ -307,7 +389,7 @@ def download_track_by_link(
                 source_used = "Deezer (MP3 320)"
 
         # Шаг MP3-2: Soulseek (честный 320k CBR / FLAC)
-        if not file_path and (config.SLSK_USER or config.SLSKD_URL):
+        if not file_path and not parallel_mode and (config.SLSK_USER or config.SLSKD_URL):
             report("[*] Soulseek: поиск MP3...")
             candidates = search_soulseek(artist, title, limit=3, target_quality="MP3", duration=duration)
             for idx, cand in enumerate(candidates, 1):
@@ -329,9 +411,28 @@ def download_track_by_link(
             if not file_path and candidates:
                 report(f"[!] Soulseek: все {len(candidates)} кандидатов недоступны")
 
-        # Шаг MP3-3a: Если есть прямая ссылка на аудиопоток (например, VK Музыка CDN)
+        # Шаг MP3-3: Zarz-шлюз, lossy-цепочка (Tidal AAC 320 → Amazon Opus 320
+        # → Beatport AAC 256). Оригинальные контейнеры без пережатия —
+        # 320k с официальных площадок лучше, чем opus ~130-160k с YT,
+        # поэтому цепочка идёт до прямых ссылок и YouTube.
+        # Qobuz не участвует: он только lossless.
+        if not file_path and not parallel_mode and getattr(config, "ZARZ_ENABLED", True):
+            file_path, zarz_source = download_lossy_zarz_track(
+                artist=artist,
+                title=title,
+                dest_dir=target_dir,
+                duration=duration,
+                isrc=isrc,
+                album=album,
+                status_callback=report,
+                progress_callback=progress_callback,
+            )
+            if file_path:
+                source_used = zarz_source
+
+        # Шаг MP3-4a: Если есть прямая ссылка на аудиопоток (например, VK Музыка CDN)
         direct_audio_url = meta.get("direct_url")
-        if not file_path and direct_audio_url and not is_youtube and "youtube" not in direct_audio_url and not is_soundcloud and "soundcloud" not in direct_audio_url:
+        if not file_path and not parallel_mode and direct_audio_url and not is_youtube and "youtube" not in direct_audio_url and not is_soundcloud and "soundcloud" not in direct_audio_url:
             report(f"[*] Прямое скачивание аудиопотока ({artist} - {title})...")
             try:
                 import httpx
@@ -364,9 +465,9 @@ def download_track_by_link(
             except Exception as e:
                 report(f"[!] Ошибка прямого скачивания потока: {e}")
 
-        # Шаг MP3-3b: Если передана прямая ссылка YouTube — скачиваем по исходной ссылке
+        # Шаг MP3-4b: Если передана прямая ссылка YouTube — скачиваем по исходной ссылке
         # (если на Deezer и Soulseek не нашлось официального студийного релиза)
-        if not file_path and (is_youtube or (direct_audio_url and ("youtube" in direct_audio_url or "youtu.be" in direct_audio_url))):
+        if not file_path and not parallel_mode and (is_youtube or (direct_audio_url and ("youtube" in direct_audio_url or "youtu.be" in direct_audio_url))):
             yt_target = direct_audio_url if (direct_audio_url and ("youtube" in direct_audio_url or "youtu.be" in direct_audio_url)) else url_or_query
             report(f"[*] YouTube: скачивание по прямой ссылке ({artist} - {title})...")
             file_path = download_youtube_track(
@@ -384,9 +485,9 @@ def download_track_by_link(
             if file_path:
                 source_used = "YouTube (Direct)"
 
-        # Шаг MP3-3c: Если передана прямая ссылка SoundCloud — скачиваем оригинал с SoundCloud
+        # Шаг MP3-4c: Если передана прямая ссылка SoundCloud — скачиваем оригинал с SoundCloud
         # (если на Deezer и Soulseek не нашлось официального студийного релиза)
-        if not file_path and is_soundcloud:
+        if not file_path and not parallel_mode and is_soundcloud:
             report(f"[*] SoundCloud: скачивание оригинала ({artist} - {title})...")
             sc_target = meta.get("soundcloud_url") or url_or_query
             file_path = download_soundcloud_track(
@@ -401,7 +502,7 @@ def download_track_by_link(
             if file_path:
                 source_used = "SoundCloud (Original)"
 
-        # Шаг MP3-4: YouTube Music с умным поиском CSVMusic (для текстовых запросов или стриминговых ссылок)
+        # Шаг MP3-5: YouTube Music с умным поиском CSVMusic (для текстовых запросов или стриминговых ссылок)
         if not file_path:
             report("[*] YouTube Music: поиск трека...")
             direct_yt = meta.get("youtube_music_url")
@@ -421,7 +522,7 @@ def download_track_by_link(
             if file_path:
                 source_used = "YouTube Music"
 
-        # Шаг MP3-5: Финальный фолбек
+        # Шаг MP3-6: Финальный фолбек
         if not file_path:
             report("[*] yt-dlp: фолбек-скачивание...")
             fallback_target = meta.get("direct_url") or meta.get("youtube_music_url") or meta.get("soundcloud_url") or url_or_query

@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 /downloads
 /slskd
+/.zarz
+/temp
 docker-compose.yml
 /.agents
 /Mornye-Python

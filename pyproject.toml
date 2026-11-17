@@ -23,6 +23,11 @@ dependencies = [
     "yt-dlp-ejs>=0.8.0",
     "rich>=13.0.0",
     "pillow>=12.3.0",
+    # Zarz-шлюз (Tidal/Qobuz/Amazon/Beatport): решение Cloudflare Turnstile
+    # в реальном Chrome. Пин как у Mornye-Python — API pydoll пока нестабилен.
+    "pydoll-python==2.27.0",
+    # HTTP/2 для подписанного клиента zarz (httpx.AsyncClient(http2=True)).
+    "h2>=4.1.0",
 ]
 
 [project.optional-dependencies]

@@ -83,6 +83,54 @@ TIDAL_COUNTRY_CODE: str = os.getenv("TIDAL_COUNTRY_CODE", "US").strip() or "US"
 APPLE_STOREFRONT: str = os.getenv("APPLE_STOREFRONT", "US").strip() or "US"
 
 
+# ── Zarz-шлюз: lossless-источники из экосистемы Mornye ─────────────────
+#
+# Tidal / Amazon Music / Qobuz / Beatport отдают FLAC через шлюз
+# api.zarz.moe (пул платных аккаунтов на стороне сервера). Первая авторизация
+# решает Cloudflare Turnstile в реальном Chrome (нужны pydoll и установленный
+# Chrome/Chromium); дальше сессия хранится на диске в ZARZ_DATA_DIR и запросы
+# подписываются HMAC. Секреты сессий живые — каталог в .gitignore.
+#
+# Поиск у Tidal (публичный web-API) и Amazon (анонимный mesk-API) работает
+# без шлюза; Qobuz и Beatport ищут уже через Zarz.
+ZARZ_ENABLED: bool = _env_flag("ZARZ_ENABLED")
+ZARZ_API_BASE: str = (
+    os.getenv("ZARZ_API_BASE", "https://api.zarz.moe/v2").strip().strip("'\"").rstrip("/")
+)
+ZARZ_DATA_DIR: str = os.getenv("ZARZ_DATA_DIR", ".zarz").strip().strip("'\"") or ".zarz"
+
+ZARZ_TIDAL: bool = _env_flag("ZARZ_TIDAL")
+ZARZ_QOBUZ: bool = _env_flag("ZARZ_QOBUZ")
+ZARZ_AMAZON: bool = _env_flag("ZARZ_AMAZON")
+ZARZ_BEATPORT: bool = _env_flag("ZARZ_BEATPORT")
+
+# Качество по умолчанию для каждого провайдера:
+# Tidal: HI_RES_LOSSLESS (24-bit, с откатом на LOSSLESS 16/44.1);
+# Qobuz: hi-res-max (24/192, с откатом на hi-res и cd);
+# Amazon: flac (или opus/eac3/ac4 — Atmos/lossy, в FLAC-ветке не считается);
+# Beatport: lossless (FLAC) или high (AAC 256).
+# В гонке источников побеждает фактически самый жирный файл, поэтому
+# дефолты запрашивают максимум — откатные цепочки отработают сами.
+ZARZ_TIDAL_QUALITY: str = os.getenv("ZARZ_TIDAL_QUALITY", "HI_RES_LOSSLESS").strip() or "HI_RES_LOSSLESS"
+ZARZ_QOBUZ_QUALITY: str = os.getenv("ZARZ_QOBUZ_QUALITY", "hi-res-max").strip() or "hi-res-max"
+ZARZ_AMAZON_CODEC: str = os.getenv("ZARZ_AMAZON_CODEC", "flac").strip() or "flac"
+ZARZ_BEATPORT_QUALITY: str = os.getenv("ZARZ_BEATPORT_QUALITY", "lossless").strip() or "lossless"
+
+
+# ── Гонка источников (PARALLEL_SOURCES) ───────────────────────────────
+#
+# Все источники ветки стартуют одновременно; победитель выбирается по
+# фактическому качеству файла:
+# - FLAC: самый жирный по битности/семплрейту (максимум 24/192 отменяет остальных);
+# - MP3: первый, кто отдал ≥ RACE_MIN_BITRATE kbps (lossless от Soulseek —
+#   безусловная победа), иначе лучший по битрейту из доехавших.
+# Проигравшие отменяются (где поддерживается) и удаляются.
+# RACE_TIMEOUT — общий потолок гонки в секундах.
+PARALLEL_SOURCES: bool = _env_flag("PARALLEL_SOURCES")
+RACE_TIMEOUT: int = int(os.getenv("RACE_TIMEOUT", "240").strip().strip("'\"") or 240)
+RACE_MIN_BITRATE: int = int(os.getenv("RACE_MIN_BITRATE", "320").strip().strip("'\"") or 320)
+
+
 
 def build_user_agent(extra: str = "") -> str:
     """
