@@ -205,8 +205,9 @@ def run_race(
         target = dest_dir / path.name
         moved = False
         # Windows: свежесозданный файл может быть кратковременно залочен
-        # (антивирус/индексатор) — пара попыток вместо мгновенной сдачи.
-        for attempt in range(3):
+        # (антивирус/индексатор) — пара попыток вместо мгновенной сдачи,
+        # плюс fallback на copyfile при PermissionError на move.
+        for attempt in range(5):
             try:
                 if target.exists():
                     target.unlink()
@@ -214,10 +215,20 @@ def run_race(
                 moved = True
                 break
             except Exception as e:
-                if attempt == 2:
+                try:
+                    shutil.copyfile(str(path), str(target))
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    moved = True
+                    break
+                except Exception:
+                    pass
+                if attempt == 4:
                     report(f"[!] Гонка: не удалось перенести файл победителя: {e}")
                 else:
-                    time.sleep(0.3)
+                    time.sleep(0.2)
         if moved:
             final_path = target
             label = _label(name, score, mode)

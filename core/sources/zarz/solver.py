@@ -935,11 +935,21 @@ def _start_xvfb_if_needed() -> subprocess.Popen | None:
         return None
     if _display_is_live(os.environ.get("DISPLAY", "")):
         return None
-    proc = subprocess.Popen(
-        ["Xvfb", ":99", "-screen", "0", "1280x900x24"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if not shutil.which("Xvfb"):
+        logger.warning(
+            "[solver] Xvfb не установлен в системе (apt install -y xvfb). "
+            "Chrome будет запущен с --headless=new."
+        )
+        return None
+    try:
+        proc = subprocess.Popen(
+            ["Xvfb", ":99", "-screen", "0", "1280x900x24"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning("[solver] Не удалось запустить Xvfb (%s).", exc)
+        return None
     os.environ["DISPLAY"] = ":99"
     # Polled rather than slept: Xvfb comes up in whatever time the machine
     # takes, and a flat 0.5s was both wasteful on an idle box and too short on
@@ -1046,7 +1056,12 @@ def build_chromium_options(*, hidden: bool = True) -> tuple[ChromiumOptions, str
     # A persistent profile dir. pydoll doesn't have a first-class...
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--window-size=1280,900")
-    if hidden and not debug_visible:
+    has_display = (platform.system() != "Linux") or _display_is_live(os.environ.get("DISPLAY", ""))
+    if not has_display:
+        # На headless Linux без X11/Xvfb Chrome в обычном режиме упадёт с
+        # 'Missing X server or $DISPLAY'. Запускаем --headless=new.
+        options.add_argument("--headless=new")
+    elif hidden and not debug_visible:
         # Push the (non-headless) window off-screen instead of using
         # --headless: a fully headless browser is more likely to be
         # challenged by Cloudflare than a real, visible-but-offscreen one.

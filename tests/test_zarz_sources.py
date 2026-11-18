@@ -524,3 +524,23 @@ def test_run_chain_skips_unknown_placeholders(tmp_path):
     )
     assert path is None and label is None
     assert not called  # поиск даже не запускался
+
+
+def test_solver_xvfb_missing_falls_back_to_headless(monkeypatch):
+    """На Linux сервере без Xvfb: _start_xvfb_if_needed не падает, а build_chromium_options добавляет --headless=new."""
+    import platform
+    from core.sources.zarz import solver
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(solver, "_display_is_live", lambda d: False)
+    monkeypatch.setattr(solver.shutil, "which", lambda cmd: None if cmd == "Xvfb" else "/usr/bin/" + cmd)
+    monkeypatch.setattr(solver, "_find_chrome", lambda: "/usr/bin/chromium")
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    # 1. Не падает с FileNotFoundError
+    proc = solver._start_xvfb_if_needed()
+    assert proc is None
+
+    # 2. Браузер запускается с --headless=new вместо падения без X11
+    opts, _ = solver.build_chromium_options()
+    assert "--headless=new" in opts.arguments

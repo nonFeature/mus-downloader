@@ -119,6 +119,16 @@ def get_client(provider: str) -> SignedSessionClient:
         return client
 
 
+_auth_lock: Optional[asyncio.Lock] = None
+
+
+def _get_auth_lock() -> asyncio.Lock:
+    global _auth_lock
+    if _auth_lock is None:
+        _auth_lock = asyncio.Lock()
+    return _auth_lock
+
+
 async def _authenticate(client: SignedSessionClient) -> None:
     """Bootstrap + (при необходимости) авто-решение Turnstile в браузере.
 
@@ -129,25 +139,34 @@ async def _authenticate(client: SignedSessionClient) -> None:
     if client.authenticated:
         await client.ensure_session()
         return
-    attempts = max(1, int(os.getenv("ZARZ_AUTH_ATTEMPTS", "3")))
-    last_error: Optional[Exception] = None
-    for attempt in range(1, attempts + 1):
-        try:
-            result = await client.bootstrap()
-            if result is True:
-                return
-            # result — auth URL: нужна капча. Решаем её в реальном Chrome (pydoll).
-            await client.authenticate_with_turnstile(timeout=120.0, hold_open_seconds=4.0)
+
+    # Защита от параллельного запуска браузеров: когда гонка источников
+    # стартует с пустым кэшем сессий, провайдеры должны проходить авторизацию
+    # строго по очереди, а не запускать 4 экземпляра Chromium одновременно.
+    lock = _get_auth_lock()
+    async with lock:
+        if client.authenticated:
+            await client.ensure_session()
             return
-        except Exception as e:
-            last_error = e
-            client.pending_auth_url = None
-            client.pending_challenge_id = None
-            client.pending_sitekey = None
-            if attempt < attempts:
-                await asyncio.sleep(2.0)
-    assert last_error is not None
-    raise last_error
+        attempts = max(1, int(os.getenv("ZARZ_AUTH_ATTEMPTS", "3")))
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await client.bootstrap()
+                if result is True:
+                    return
+                # result — auth URL: нужна капча. Решаем её в реальном Chrome (pydoll).
+                await client.authenticate_with_turnstile(timeout=120.0, hold_open_seconds=4.0)
+                return
+            except Exception as e:
+                last_error = e
+                client.pending_auth_url = None
+                client.pending_challenge_id = None
+                client.pending_sitekey = None
+                if attempt < attempts:
+                    await asyncio.sleep(2.0)
+        assert last_error is not None
+        raise last_error
 
 
 async def _ensure_auth_async(
