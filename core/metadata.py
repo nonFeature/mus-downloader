@@ -522,10 +522,10 @@ def validate_deezer_track(
         t_artist_toks = toks(target_artist)
         c_artist_toks = toks(c_artist)
         if t_artist_toks and c_artist_toks and not (t_artist_toks & c_artist_toks):
-            # 0 общих токенов в авторе. Это допустимо только при близкой длительности и хорошем названии
-            title_exact = (title_overlap >= 0.75)
-            dur_close = (not target_duration or not c_dur or abs(float(target_duration) - float(c_dur)) <= 8)
-            if not (title_exact and dur_close):
+            # 0 общих токенов: проверяем участников коллаборации
+            collab_parts = [p.strip() for p in re.split(r"(?i)\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", target_artist) if p.strip()]
+            sub_matches = any(toks(p) & c_artist_toks for p in collab_parts) if collab_parts else False
+            if not sub_matches:
                 return None
     except Exception:
         pass
@@ -1779,27 +1779,43 @@ def get_track_metadata(url: str) -> dict:
     title_query = info.get("title") or ""
     
     # Валидируем Deezer ID, полученный от song.link (отсеиваем мусорные / чужие треки)
+    dz_meta = None
     if info.get("deezer_id"):
         if not validate_deezer_track(info["deezer_id"], title_query, artist_query, info.get("duration")):
             info["deezer_id"] = None
 
-    # Если Deezer ID не найден или не прошел валидацию, пробуем прямой поиск по артисту и названию
+    # Если есть ISRC (Spotify, Apple Music, Odesli), сначала резолвим Deezer напрямую по ISRC —
+    # это самый точный путь без неоднозначности и ошибок текстового поиска.
+    if not info.get("deezer_id") and info.get("isrc"):
+        try:
+            dz_by_isrc = resolve_deezer_by_isrc(
+                info["isrc"],
+                expected_artist=artist_query,
+                expected_title=title_query,
+                expected_duration=info.get("duration"),
+            )
+            if dz_by_isrc and dz_by_isrc.get("deezer_id"):
+                info["deezer_id"] = dz_by_isrc["deezer_id"]
+                dz_meta = dz_by_isrc
+        except Exception:
+            pass
+
+    # Если Deezer ID всё ещё не найден, пробуем поиск по артисту и названию (с валидацией)
     if not info.get("deezer_id") and artist_query and title_query:
         try:
-            from sources.deezer import search_deezer_track
+            from .sources.deezer import search_deezer_track
             found_dz_id = search_deezer_track(
                 artist_query,
                 title_query,
                 duration=info.get("duration"),
                 album=info.get("album"),
             )
-            if found_dz_id:
+            if found_dz_id and validate_deezer_track(found_dz_id, title_query, artist_query, info.get("duration")):
                 info["deezer_id"] = found_dz_id
         except Exception:
             pass
 
-    dz_meta = None
-    if info.get("deezer_id"):
+    if info.get("deezer_id") and not dz_meta:
         dz_meta = fetch_deezer_metadata(info["deezer_id"])
         
     isrc_query = info.get("isrc") or (dz_meta.get("isrc") if dz_meta else None)

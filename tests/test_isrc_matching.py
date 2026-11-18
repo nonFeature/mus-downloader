@@ -276,3 +276,58 @@ def test_falls_back_to_name_search_when_no_isrc(tmp_path):
     finally:
         cache_mod.get_cache = original
         instance.close()
+
+
+def test_search_deezer_track_rejects_zero_artist_overlap():
+    """Чужой исполнитель с тем же названием песни (например, 'Peachy Baby - BABY DADDY'
+    для запроса 'BATO - Daddy') должен отбрасываться, а не выбираться с баллом 0.65."""
+    mock_data = [
+        {
+            "id": 2856705232,
+            "title": "BABY DADDY",
+            "artist": {"name": "Peachy Baby"},
+            "duration": 149,
+        },
+        {
+            "id": 2578013042,
+            "title": "Baby Daddy",
+            "artist": {"name": "Shay"},
+            "duration": 150,
+        },
+    ]
+    with patch("httpx.get") as mock_get:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"data": mock_data}
+        mock_get.return_value = resp
+
+        # BATO не имеет ничего общего с Peachy Baby или Shay
+        found = deezer.search_deezer_track("BATO", "Daddy")
+        assert found is None
+
+
+def test_get_track_metadata_resolves_deezer_via_isrc_first(monkeypatch):
+    """При разрешении ссылки со стриминга (где есть ISRC) Deezer резолвится
+    напрямую через ISRC, избегая ошибок и шума текстового поиска."""
+    called = {}
+
+    def fake_song_link(url):
+        return {
+            "title": "Daddy",
+            "artist": "BATO",
+            "isrc": "RUAGV2640060",
+            "duration": 119.0,
+            "deezer_id": None,
+        }
+
+    def fake_by_isrc(isrc, **kw):
+        called["isrc"] = isrc
+        return {"deezer_id": "4403918071", "title": "Daddy", "artist": "Bato"}
+
+    monkeypatch.setattr(metadata, "resolve_song_link", fake_song_link)
+    monkeypatch.setattr(metadata, "resolve_deezer_by_isrc", fake_by_isrc)
+    monkeypatch.setattr(metadata, "fetch_itunes_metadata", lambda **k: None)
+
+    res = metadata.get_track_metadata("https://open.spotify.com/track/64ufEOeSDCZrm1xlnvUe7L")
+    assert called.get("isrc") == "RUAGV2640060"
+    assert res.get("deezer_id") == "4403918071"

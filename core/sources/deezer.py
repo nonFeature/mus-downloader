@@ -424,22 +424,16 @@ def search_deezer_track(
 
                 artist_overlap = len(target_artist_toks & c_artist_toks) / max(1, len(target_artist_toks)) if target_artist_toks else 1.0
 
-                if best_sub_overlap >= 0.5 or artist_overlap > 0:
-                    artist_penalty = 0.0
-                else:
-                    # Чужой исполнитель: проверяем, не имитация ли
-                    is_imitation = False
-                    for p in collab_parts:
-                        if p and re.search(r"(?i)\b(?:by|with|featuring)\s+" + re.escape(p), track_title):
-                            is_imitation = True
-                            break
-                    if is_imitation:
-                        continue
-                    artist_penalty = 0.35
+                # Если артист запроса известен, кандидат ОБЯЗАН иметь пересечение либо
+                # по основному артисту, либо по одному из участников коллаборации.
+                # Иначе чужой исполнитель с тем же частым названием (например, "Daddy" от
+                # "Peachy Baby" вместо "BATO") набирает высокий балл только за счёт названия.
+                if target_artist_toks and not (best_sub_overlap >= 0.5 or artist_overlap > 0):
+                    continue
 
                 # Расчет оценки соответствия:
                 title_score = 0.60 * title_overlap
-                artist_score = 0.40 if (best_sub_overlap >= 0.5 or artist_overlap > 0) else max(0.0, 0.40 - artist_penalty)
+                artist_score = 0.40
                 score = title_score + artist_score
 
                 c_vm = _version_markers(track_title)
