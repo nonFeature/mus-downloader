@@ -348,6 +348,8 @@ def _decrypt_with_ffmpeg(src: Path, key: str, out: Path) -> None:
         "-decryption_key", key,
         "-i", str(src),
         "-c", "copy",
+        "-map_metadata", "-1",
+        "-fflags", "+bitexact",
         str(out),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
