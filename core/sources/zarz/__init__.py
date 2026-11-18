@@ -13,6 +13,7 @@
 """
 import asyncio
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -22,6 +23,8 @@ from typing import Any, Callable, Optional
 import httpx
 
 from .signed_session_mobile import SignedSessionClient
+
+logger = logging.getLogger(__name__)
 
 BASE_URL_DEFAULT = "https://api.zarz.moe/v2"
 
@@ -114,6 +117,12 @@ def get_client(provider: str) -> SignedSessionClient:
                 namespace="zarz-v2",
                 app_version=APP_VERSIONS[provider],
                 platform="extension",
+                endpoints={
+                    "bootstrap": "/bootstrap",
+                    "challenge": "/challenge",
+                    "exchange": "/session/exchange",
+                    "refresh": "/session/refresh",
+                },
             )
             _clients[provider] = client
         return client
@@ -136,18 +145,28 @@ async def _authenticate(client: SignedSessionClient) -> None:
     нестабильной сети этого может не хватить. Каждая попытка стартует
     со свежего challenge (bootstrap кэширует pending_auth_url — сбрасываем).
     """
+    # Всегда сначала перечитываем актуальное состояние с диска
+    client._load()
     if client.authenticated:
-        await client.ensure_session()
-        return
+        try:
+            await client.ensure_session()
+            return
+        except RuntimeError:
+            client.clear()
 
     # Защита от параллельного запуска браузеров: когда гонка источников
     # стартует с пустым кэшем сессий, провайдеры должны проходить авторизацию
     # строго по очереди, а не запускать 4 экземпляра Chromium одновременно.
     lock = _get_auth_lock()
     async with lock:
+        client._load()
         if client.authenticated:
-            await client.ensure_session()
-            return
+            try:
+                await client.ensure_session()
+                return
+            except RuntimeError:
+                client.clear()
+
         attempts = max(1, int(os.getenv("ZARZ_AUTH_ATTEMPTS", "3")))
         last_error: Optional[Exception] = None
         for attempt in range(1, attempts + 1):
@@ -419,3 +438,35 @@ def is_flac(path: Path) -> bool:
             return f.read(4) == b"fLaC"
     except OSError:
         return False
+
+
+def prepare_sessions_for_download(status_callback: Optional[Callable[[str], None]] = None) -> None:
+    """При каждой скачке проверяет сессии всех активных провайдеров Zarz.
+
+    - Перечитывает файлы сессий с диска (на случай если другая машина/процесс обновил их).
+    - Если сессия валидна, но подошло время рефреша — продлевает её в фоне (POST /session/refresh)
+      без капчи и без открытия браузера.
+    - Если сессия протухла или отсутствует — автоматически получает новую через bootstrap / Turnstile.
+    """
+    try:
+        import config
+    except ImportError:
+        return
+    if not getattr(config, "ZARZ_ENABLED", True):
+        return
+
+    active = []
+    if getattr(config, "ZARZ_TIDAL", True):
+        active.append("tidal")
+    if getattr(config, "ZARZ_AMAZON", True):
+        active.append("amazon")
+    if getattr(config, "ZARZ_QOBUZ", True):
+        active.append("qobuz")
+    if getattr(config, "ZARZ_BEATPORT", True):
+        active.append("beatport")
+
+    for p in active:
+        try:
+            ensure_authenticated(p, status_callback=status_callback)
+        except Exception as e:
+            logger.debug("[zarz:%s] Проверка сессии перед скачиванием: %s", p, e)

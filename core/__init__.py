@@ -288,6 +288,14 @@ def download_track_by_link(
             if deezer_id:
                 cache.set_deezer_id(artist, title, album or "", deezer_id)
 
+    # Проверка и актуализация сессий Zarz перед скачиванием
+    if getattr(config, "ZARZ_ENABLED", True):
+        try:
+            from .sources.zarz import prepare_sessions_for_download
+            prepare_sessions_for_download(status_callback=report)
+        except Exception:
+            pass
+
     # 2. Логика для FLAC (строгий поиск lossless: Soulseek -> Deezer)
     parallel_mode = getattr(config, "PARALLEL_SOURCES", True)
     if target_quality == "FLAC":

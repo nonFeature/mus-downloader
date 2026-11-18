@@ -544,3 +544,28 @@ def test_solver_xvfb_missing_falls_back_to_headless(monkeypatch):
     # 2. Браузер запускается с --headless=new вместо падения без X11
     opts, _ = solver.build_chromium_options()
     assert "--headless=new" in opts.arguments
+
+
+def test_prepare_sessions_for_download_checks_active_providers(monkeypatch):
+    """prepare_sessions_for_download опрашивает всех включенных Zarz-провайдеров."""
+    import config
+    from core.sources import zarz
+
+    called = []
+    monkeypatch.setattr(config, "ZARZ_ENABLED", True)
+    monkeypatch.setattr(config, "ZARZ_TIDAL", True)
+    monkeypatch.setattr(config, "ZARZ_AMAZON", True)
+    monkeypatch.setattr(config, "ZARZ_QOBUZ", False)
+    monkeypatch.setattr(config, "ZARZ_BEATPORT", False)
+
+    monkeypatch.setattr(
+        zarz,
+        "ensure_authenticated",
+        lambda p, **kw: called.append(p),
+    )
+
+    zarz.prepare_sessions_for_download()
+    assert "tidal" in called
+    assert "amazon" in called
+    assert "qobuz" not in called
+    assert "beatport" not in called

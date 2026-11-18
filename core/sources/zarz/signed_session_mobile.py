@@ -93,11 +93,7 @@ _DEFAULT_ENDPOINTS = {
     "bootstrap": "/bootstrap",
     "challenge": "/challenge",
     "exchange": "/session/exchange",
-    # NOTE: no default for "refresh": the reference Go backend
-    # (extension_signed_session.go) does not define one and only attempts
-    # refresh if the manifest explicitly declares it in endpoints.refresh.
-    # Guessing a default here risks hitting a nonexistent path when the
-    # manifest does not declare refresh.
+    "refresh": "/session/refresh",
 }
 
 # Headers "from real browser" observed via DevTools on a call
@@ -716,6 +712,9 @@ class SignedSessionClient:
                 resp.status_code,
                 resp.text[:200],
             )
+            if resp.status_code in (401, 403, 404):
+                # Сессия аннулирована шлюзом — сбрасываем, чтобы запросилась новая
+                self.clear()
             return
         try:
             data = resp.json()
